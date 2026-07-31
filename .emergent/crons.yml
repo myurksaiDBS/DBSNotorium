@@ -1,0 +1,8 @@
+crons:
+  - name: commission-alerts
+    description: "Daily 8am UTC scan for notary commissions nearing expiration; emails owner at 60/30/14/7/1-day marks and on expiry day"
+    cron: "0 8 * * *"
+    endpoint: "{{BASE_URL}}/api/cron/commission-alerts"
+    method: POST
+    # Cron endpoints must ack 2xx immediately; enqueue/background the actual work.
+    enabled: true

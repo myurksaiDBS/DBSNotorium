@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?><testsuites name="pytest tests"><testsuite name="pytest" errors="0" failures="2" skipped="0" tests="2" time="7.367" timestamp="2026-07-31T18:49:37.788814+00:00" hostname="agent-env-8593e0f3-4da2-494a-ab28-380e8288e182"><testcase classname="tests.backend_test.TestCommissionAlerts" name="test_bucket_mapping_covers_every_required_threshold" time="0.001"><failure message="ModuleNotFoundError: No module named 'server'">backend/tests/backend_test.py:193: in test_bucket_mapping_covers_every_required_threshold
+    from server import _current_alert_bucket
+E   ModuleNotFoundError: No module named 'server'</failure></testcase><testcase classname="tests.backend_test.TestCommissionAlerts" name="test_cron_45_day_send_dedup_far_future_and_expired" time="6.062"><failure message="ModuleNotFoundError: No module named 'server'">backend/tests/backend_test.py:349: in test_cron_45_day_send_dedup_far_future_and_expired
+    from server import _render_commission_email
+E   ModuleNotFoundError: No module named 'server'</failure></testcase></testsuite></testsuites>

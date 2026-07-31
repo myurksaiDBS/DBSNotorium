@@ -1,16 +1,22 @@
-"""API regression tests for signer intakes, authentication, dashboard, journal and PDF export."""
+"""API regression tests for commission alerts, signer intakes, authentication, dashboard, journal and PDF export."""
 import asyncio
+import sys
+import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor
-from datetime import datetime, timezone
+from datetime import date, datetime, timedelta, timezone
+from pathlib import Path
 
 import pytest
 import requests
 import bcrypt
+import yaml
 from motor.motor_asyncio import AsyncIOMotorClient
 from dotenv import dotenv_values
 
 from conftest import BASE_URL
+
+sys.path.insert(0, "/app/backend")
 
 
 VALID_SIGNER = {
@@ -92,6 +98,261 @@ class TestAuthSecurity:
         assert response.status_code in (200, 204)
         assert response.headers.get("access-control-allow-origin") != "*"
         assert response.headers.get("access-control-allow-credentials") == "true"
+
+
+# Commission alert API, cron authorization/idempotency, persistence, and bucket behavior.
+ALERT_STATE_FIELDS = (
+    "commission_expires", "alerts_enabled", "last_alert_bucket",
+    "last_alert_sent_at", "last_alert_email_id",
+)
+
+
+def _db_call(operation):
+    env = dotenv_values("/app/backend/.env")
+
+    async def execute():
+        client = AsyncIOMotorClient(env["MONGO_URL"])
+        try:
+            return await operation(client[env["DB_NAME"]])
+        finally:
+            client.close()
+
+    return asyncio.run(execute())
+
+
+def _get_admin(email):
+    async def operation(database):
+        return await database.users.find_one({"email": email.lower()})
+
+    return _db_call(operation)
+
+
+def _update_admin(email, set_values=None, unset_fields=()):
+    update = {}
+    if set_values:
+        update["$set"] = set_values
+    if unset_fields:
+        update["$unset"] = {field: "" for field in unset_fields}
+
+    async def operation(database):
+        return await database.users.update_one({"email": email.lower()}, update)
+
+    return _db_call(operation)
+
+
+@pytest.fixture
+def isolated_commission_state(credentials):
+    """Snapshot the owner and pause other users so cron tests cannot email unrelated accounts."""
+    email = credentials["email"].lower()
+
+    async def prepare(database):
+        owner = await database.users.find_one({"email": email})
+        assert owner is not None
+        other_states = []
+        async for user in database.users.find({"email": {"$ne": email}}):
+            other_states.append((user["_id"], "alerts_enabled" in user, user.get("alerts_enabled")))
+        await database.users.update_many({"email": {"$ne": email}}, {"$set": {"alerts_enabled": False}})
+        return owner, other_states
+
+    owner, other_states = _db_call(prepare)
+    yield owner
+    time.sleep(1)
+
+    async def restore(database):
+        set_values = {field: owner[field] for field in ALERT_STATE_FIELDS if field in owner}
+        unset_values = {field: "" for field in ALERT_STATE_FIELDS if field not in owner}
+        update = {}
+        if set_values:
+            update["$set"] = set_values
+        if unset_values:
+            update["$unset"] = unset_values
+        if update:
+            await database.users.update_one({"_id": owner["_id"]}, update)
+        for user_id, existed, value in other_states:
+            if existed:
+                await database.users.update_one({"_id": user_id}, {"$set": {"alerts_enabled": value}})
+            else:
+                await database.users.update_one({"_id": user_id}, {"$unset": {"alerts_enabled": ""}})
+        await database.cron_runs.delete_many({"run_id": {"$regex": "^TEST_COMMISSION_"}})
+
+    _db_call(restore)
+
+
+def _wait_for_admin_field(email, field, expected, timeout=10):
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        user = _get_admin(email)
+        if user and user.get(field) == expected:
+            return user
+        time.sleep(0.4)
+    user = _get_admin(email)
+    pytest.fail(f"Timed out waiting for {field}={expected!r}; current={user.get(field) if user else None!r}")
+
+
+class TestCommissionAlerts:
+    """Commission alert status, profile, email, cron, bucket and schedule tests."""
+
+    def test_bucket_mapping_covers_every_required_threshold(self):
+        from server import _current_alert_bucket
+
+        today = date(2026, 7, 31)
+        cases = {
+            61: None, 60: 60, 45: 60, 30: 30, 29: 30,
+            14: 14, 13: 14, 7: 7, 6: 7, 1: 1, 0: 0, -1: -1,
+        }
+        actual = {
+            days_left: _current_alert_bucket(today + timedelta(days=days_left), today)
+            for days_left in cases
+        }
+        assert actual == cases
+
+    def test_cron_schedule_contract(self):
+        schedule = yaml.safe_load(Path("/app/.emergent/crons.yml").read_text(encoding="utf-8"))
+        assert isinstance(schedule, dict) and len(schedule.get("crons", [])) == 1
+        cron = schedule["crons"][0]
+        assert cron["name"] == "commission-alerts" and len(cron["name"]) <= 21
+        assert cron["cron"] == "0 8 * * *"
+        assert cron["endpoint"] == "{{BASE_URL}}/api/cron/commission-alerts"
+        assert cron["method"] == "POST" and cron["enabled"] is True
+
+    def test_profile_alert_default_toggle_and_status_persist(self, authenticated_client, credentials,
+                                                             isolated_commission_state):
+        email = credentials["email"]
+        _update_admin(email, unset_fields=("alerts_enabled",))
+        me_default = authenticated_client.get(f"{BASE_URL}/api/auth/me", timeout=20)
+        assert me_default.status_code == 200 and me_default.json()["alerts_enabled"] is True
+
+        disabled = authenticated_client.put(
+            f"{BASE_URL}/api/auth/profile", json={"alerts_enabled": False}, timeout=20
+        )
+        assert disabled.status_code == 200 and disabled.json()["alerts_enabled"] is False
+        persisted_off = authenticated_client.get(f"{BASE_URL}/api/auth/me", timeout=20)
+        assert persisted_off.status_code == 200 and persisted_off.json()["alerts_enabled"] is False
+
+        enabled = authenticated_client.put(
+            f"{BASE_URL}/api/auth/profile", json={"alerts_enabled": True}, timeout=20
+        )
+        assert enabled.status_code == 200 and enabled.json()["alerts_enabled"] is True
+        persisted_on = authenticated_client.get(f"{BASE_URL}/api/auth/me", timeout=20)
+        assert persisted_on.status_code == 200 and persisted_on.json()["alerts_enabled"] is True
+
+    def test_alert_status_unset_and_configured_upcoming_counts(self, authenticated_client, credentials,
+                                                               isolated_commission_state):
+        email = credentials["email"]
+        _update_admin(email, set_values={"alerts_enabled": True}, unset_fields=("commission_expires",))
+        unset_status = authenticated_client.get(f"{BASE_URL}/api/alerts/status", timeout=20)
+        assert unset_status.status_code == 200
+        assert unset_status.json() == {"configured": False, "enabled": True}
+
+        expiry = (datetime.now(timezone.utc).date() + timedelta(days=45)).isoformat()
+        _update_admin(email, set_values={"commission_expires": expiry})
+        configured = authenticated_client.get(f"{BASE_URL}/api/alerts/status", timeout=20)
+        assert configured.status_code == 200
+        data = configured.json()
+        assert data["configured"] is True and data["enabled"] is True
+        assert data["commission_expires"] == expiry and data["days_left"] == 45
+        assert [item["days_out"] for item in data["upcoming_alerts"]] == [30, 14, 7, 1, 0]
+        assert all(isinstance(item["on"], str) for item in data["upcoming_alerts"])
+
+    def test_preview_email_sends_to_current_user(self, authenticated_client, credentials,
+                                                 isolated_commission_state):
+        expiry = (datetime.now(timezone.utc).date() + timedelta(days=45)).isoformat()
+        _update_admin(credentials["email"], set_values={"commission_expires": expiry, "alerts_enabled": True})
+        response = authenticated_client.post(f"{BASE_URL}/api/alerts/test", timeout=40)
+        assert response.status_code == 200, response.text
+        data = response.json()
+        assert data["ok"] is True
+        assert data["sent_to"] == credentials["email"]
+        assert isinstance(data["email_id"], str) and data["email_id"]
+
+    def test_cron_auth_immediate_ack_and_webhook_idempotency(self, credentials,
+                                                             isolated_commission_state):
+        env = dotenv_values("/app/backend/.env")
+        endpoint = f"{BASE_URL}/api/cron/commission-alerts"
+        no_auth = requests.post(endpoint, timeout=20)
+        wrong_auth = requests.post(endpoint, headers={"Authorization": "Bearer wrong"}, timeout=20)
+        assert no_auth.status_code == 401 and no_auth.json()["detail"] == "Unauthorized"
+        assert wrong_auth.status_code == 401 and wrong_auth.json()["detail"] == "Unauthorized"
+
+        expiry = (datetime.now(timezone.utc).date() + timedelta(days=100)).isoformat()
+        _update_admin(
+            credentials["email"],
+            set_values={"commission_expires": expiry, "alerts_enabled": True},
+            unset_fields=("last_alert_bucket", "last_alert_sent_at", "last_alert_email_id"),
+        )
+        run_id = f"TEST_COMMISSION_AUTH_{uuid.uuid4().hex}"
+        headers = {
+            "Authorization": f"Bearer {env['WEBHOOK_CRON_SECRET']}",
+            "X-Webhook-Id": run_id,
+        }
+        started = time.monotonic()
+        accepted = requests.post(endpoint, headers=headers, timeout=20)
+        elapsed = time.monotonic() - started
+        assert accepted.status_code == 200
+        assert accepted.json() == {"accepted": True, "run_id": run_id}
+        assert elapsed < 3, f"Cron acknowledgement took {elapsed:.2f}s"
+
+        duplicate = requests.post(endpoint, headers=headers, timeout=20)
+        assert duplicate.status_code == 200
+        assert duplicate.json() == {"accepted": True, "duplicate": True, "run_id": run_id}
+        time.sleep(1)
+        assert _get_admin(credentials["email"]).get("last_alert_email_id") is None
+
+    def test_cron_45_day_send_dedup_far_future_and_expired(self, credentials,
+                                                           isolated_commission_state):
+        env = dotenv_values("/app/backend/.env")
+        email = credentials["email"]
+        endpoint = f"{BASE_URL}/api/cron/commission-alerts"
+        auth_header = {"Authorization": f"Bearer {env['WEBHOOK_CRON_SECRET']}"}
+
+        def fire(label):
+            run_id = f"TEST_COMMISSION_{label}_{uuid.uuid4().hex}"
+            response = requests.post(
+                endpoint,
+                headers={**auth_header, "X-Webhook-Id": run_id},
+                timeout=20,
+            )
+            assert response.status_code == 200
+            assert response.json() == {"accepted": True, "run_id": run_id}
+
+        today = datetime.now(timezone.utc).date()
+        _update_admin(
+            email,
+            set_values={"commission_expires": (today + timedelta(days=45)).isoformat(), "alerts_enabled": True},
+            unset_fields=("last_alert_bucket", "last_alert_sent_at", "last_alert_email_id"),
+        )
+        fire("45DAY")
+        first = _wait_for_admin_field(email, "last_alert_bucket", 60)
+        first_id, first_sent_at = first["last_alert_email_id"], first["last_alert_sent_at"]
+        assert isinstance(first_id, str) and first_id
+
+        fire("DEDUP")
+        time.sleep(1.5)
+        deduped = _get_admin(email)
+        assert deduped["last_alert_bucket"] == 60
+        assert deduped["last_alert_email_id"] == first_id
+        assert deduped["last_alert_sent_at"] == first_sent_at
+
+        _update_admin(email, set_values={"commission_expires": (today + timedelta(days=100)).isoformat()})
+        fire("FAR")
+        time.sleep(1.5)
+        far = _get_admin(email)
+        assert far["last_alert_email_id"] == first_id and far["last_alert_sent_at"] == first_sent_at
+
+        _update_admin(
+            email,
+            set_values={"commission_expires": (today - timedelta(days=1)).isoformat()},
+            unset_fields=("last_alert_bucket", "last_alert_sent_at", "last_alert_email_id"),
+        )
+        fire("EXPIRED")
+        expired = _wait_for_admin_field(email, "last_alert_bucket", -1)
+        assert isinstance(expired["last_alert_email_id"], str) and expired["last_alert_email_id"]
+        assert expired["last_alert_email_id"] != first_id
+
+        from server import _render_commission_email
+        subject, html = _render_commission_email("Matthew", -1, today - timedelta(days=1), BASE_URL)
+        assert "EXPIRED" in subject
+        assert "Domini Business Services" in html and "Commission Alerts" in html
 
 
 class TestSignerIntakes:

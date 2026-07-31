@@ -1,0 +1,90 @@
+{
+  "summary": "Tested Commission Alerts backend/API, real Resend sends, cron auth/idempotency/background behavior, profile/status persistence, alert bucket dedup/far-future/expired paths, schedule contract, Settings UI, and dashboard/journal/intake regressions. Desktop feature flows pass, but bucket selection is critically wrong below 60 days and the Settings alerts panel is inaccessible on mobile. Existing CORS and brute-force issues also remain.",
+  "backend_issues": {
+    "critical": [
+      {
+        "endpoint": "POST /api/cron/commission-alerts (_current_alert_bucket)",
+        "issue": "ALERT_BUCKETS is iterated as [60,30,14,7,1,0], so every non-expired date at 60 days or less maps to bucket 60. At 30/14/7/1/0 days the cron still returns bucket 60 and, after the first 60-day alert, dedup skips all later required notices.",
+        "priority": "CRITICAL"
+      },
+      {
+        "endpoint": "POST /api/auth/login",
+        "issue": "Brute-force lockout failed again through ingress: six invalid attempts returned 401 instead of the sixth returning 429 because request.client.host can vary across proxy requests.",
+        "priority": "HIGH"
+      },
+      {
+        "endpoint": "CORS middleware / OPTIONS /api/auth/me",
+        "issue": "Preflight returns Access-Control-Allow-Origin: * and does not allow credentials; server.py ignores CORS_ORIGINS and hardcodes wildcard/no credentials while the frontend uses withCredentials=true.",
+        "priority": "HIGH"
+      }
+    ],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [
+      {
+        "component": "Responsive authenticated layout / Settings alerts panel",
+        "issue": "At 390x844 the fixed 256px sidebar and ml-64 main content place alerts-panel at x=296 with width=375; document width is 711px, so most Settings content and alert controls are off-screen.",
+        "selector": "[data-testid='alerts-panel']",
+        "priority": "HIGH"
+      },
+      {
+        "component": "Settings alerts description",
+        "issue": "Rendered text omits spaces around the cadence span ('at60 ... 1days').",
+        "selector": "[data-testid='alerts-panel']",
+        "priority": "LOW"
+      }
+    ],
+    "integration_issues": [],
+    "design_issues": [
+      {
+        "screen": "Settings",
+        "issues": [
+          "Commission Expiration uses the browser-native input[type=date] picker rather than the shared shadcn calendar component."
+        ]
+      },
+      {
+        "screen": "Dashboard",
+        "issues": [
+          "Recharts repeatedly logs width(-1)/height(-1) warnings during initial render, indicating the responsive chart containers mount before receiving valid dimensions."
+        ]
+      }
+    ]
+  },
+  "test_report_links": [
+    "/app/backend/tests/backend_test.py",
+    "/app/backend/tests/conftest.py",
+    "/app/test_reports/pytest/backend_regression_iteration4.xml",
+    "/app/test_reports/pytest/commission_alerts_retest2_iteration4.xml"
+  ],
+  "action_items": [
+    "Fix _current_alert_bucket to choose the smallest qualifying threshold (for example iterate 0,1,7,14,30,60 or use min), then retest all 60/30/14/7/1/0 boundaries and sequential cron sends.",
+    "Reset last_alert_bucket/last-alert metadata when commission_expires changes to a renewed commission, otherwise a prior cycle's 60-day bucket can suppress the next cycle's 60-day notice.",
+    "Make cron webhook idempotency atomic with a unique cron_runs.run_id index and insert-once operation to prevent concurrent duplicate webhook deliveries from both enqueueing work.",
+    "Make the authenticated sidebar/main layout responsive so Settings and alerts controls fit within a 390px viewport without horizontal overflow.",
+    "Use explicit CORS_ORIGINS with credentials enabled and key brute-force limits to a stable trusted client identity/email behind ingress.",
+    "Add visible alert-status API error handling and revert the optimistic toggle if profile persistence fails.",
+    "Fix alert-description spacing and replace the native date picker with the shared calendar component."
+  ],
+  "critical_code_review_comments": [
+    "server.py is 1,015 lines and should be split into focused auth, alerts/cron, journal, intake, client, and PDF modules.",
+    "update_profile changes commission_expires without clearing last_alert_bucket, creating stale dedup state across renewals.",
+    "cron_runs uses find-then-insert without a unique index, so X-Webhook-Id idempotency is race-prone under concurrent delivery.",
+    "Settings.loadStatus silently swallows errors, and toggleAlerts does not roll back local state when persistence fails.",
+    "Status values such as days-left and upcoming-alert rows lack dedicated data-testid attributes despite being critical informational output.",
+    "The requested /app/auth_testing.md playbook is absent; direct cookie, bcrypt, lockout, CORS, and seed-password checks were performed instead."
+  ],
+  "updated_files": [
+    "/app/backend/tests/backend_test.py",
+    "/app/test_reports/iteration_4.json"
+  ],
+  "success_rate": {
+    "backend": "86% (19/22 unique scoped tests passed; Commission Alerts 6/7)",
+    "frontend": "90% scoped (desktop Settings and regressions passed; mobile layout failed)"
+  },
+  "seed_data_creation": "Temporarily changed and restored the admin commission/alert fields, paused and restored non-admin alert flags during cron tests, deleted TEST_COMMISSION_ cron-run records, and created/deleted temporary TEST_ intakes and a journal entry. Eight real test emails were sent to the admin across API/UI runs; no test database records remain.",
+  "should_call_test_agent_after_fix": true,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Desktop Settings passed: alerts panel/status list, toggle off/on persistence, preview POST with email_id and success toast, dashboard cards, journal PDF download, and intake page. Cron auth 401/401/200, immediate ack under 3s, sequential duplicate=true, +45 send bucket=60, immediate dedup, +100 no send, and expired bucket=-1 all passed. The pure boundary test proves every 30/14/7/1/0 value currently maps incorrectly to 60. Admin state was restored to commission expiry 2026-09-14 with alerts enabled.",
+  "rca_of_the_issue": "Primary alert RCA: _current_alert_bucket returns the first bucket satisfying days_left <= b while ALERT_BUCKETS is ordered largest-to-smallest, so 60 wins for all 0..60 values. Mobile RCA: Layout.jsx permanently renders a fixed w-64 sidebar and ml-64 main area with no responsive breakpoint, producing 711px document width on a 390px viewport. Auth RCAs remain the unstable reverse-proxy host used in the lockout key and hardcoded wildcard/no-credentials CORS middleware."
+}

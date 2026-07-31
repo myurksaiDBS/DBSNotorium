@@ -7,13 +7,16 @@ import os
 import io
 import logging
 import base64
-from datetime import datetime, timezone, timedelta
+import asyncio
+import hmac
+import httpx
+from datetime import datetime, timezone, timedelta, date
 from typing import List, Optional, Annotated
 
 import bcrypt
 import jwt
 from bson import ObjectId
-from fastapi import FastAPI, APIRouter, HTTPException, Depends, Request, Response, Query
+from fastapi import FastAPI, APIRouter, HTTPException, Depends, Request, Response, Query, Header, BackgroundTasks
 from fastapi.responses import StreamingResponse
 from motor.motor_asyncio import AsyncIOMotorClient
 from pydantic import BaseModel, Field, EmailStr, BeforeValidator, ConfigDict
@@ -97,6 +100,7 @@ class ProfileIn(BaseModel):
     commission_number: Optional[str] = None
     commission_expires: Optional[str] = None
     state: Optional[str] = None
+    alerts_enabled: Optional[bool] = None
 
 # Journal entry
 class EntryIn(BaseModel):
@@ -250,6 +254,7 @@ async def login(payload: LoginIn, response: Response, request: Request):
         "commission_number": user.get("commission_number"),
         "commission_expires": user.get("commission_expires"),
         "state": user.get("state"),
+        "alerts_enabled": user.get("alerts_enabled", True),
     }
 
 @api.post("/auth/logout")
@@ -266,6 +271,8 @@ async def me(user=Depends(get_current_user)):
         "commission_number": user.get("commission_number"),
         "commission_expires": user.get("commission_expires"),
         "state": user.get("state"),
+        "alerts_enabled": user.get("alerts_enabled", True),
+        "last_alert_sent_at": user.get("last_alert_sent_at"),
     }
 
 @api.post("/auth/refresh")
@@ -299,6 +306,215 @@ async def update_profile(payload: ProfileIn, user=Depends(get_current_user)):
         "commission_number": doc.get("commission_number"),
         "commission_expires": doc.get("commission_expires"),
         "state": doc.get("state"),
+        "alerts_enabled": doc.get("alerts_enabled", True),
+        "last_alert_sent_at": doc.get("last_alert_sent_at"),
+    }
+
+# ---- Commission Alerts (Resend email) ----
+EMAIL_BASE_URL = "https://integrations.emergentagent.com"
+ALERT_BUCKETS = [60, 30, 14, 7, 1, 0]  # days remaining thresholds
+
+def _parse_commission_date(value: Optional[str]) -> Optional[date]:
+    if not value:
+        return None
+    try:
+        return datetime.fromisoformat(value[:10]).date()
+    except (ValueError, TypeError):
+        return None
+
+def _current_alert_bucket(expires_on: date, today: date) -> Optional[int]:
+    """Return the smallest bucket (in days) still >= days-remaining, or None."""
+    days_left = (expires_on - today).days
+    if days_left < 0:
+        return -1  # expired-notice bucket
+    for b in ALERT_BUCKETS:
+        if days_left <= b:
+            return b
+    return None
+
+def _render_commission_email(notary_name: str, days_left: int, expires_on: date, app_url: str) -> tuple[str, str]:
+    if days_left < 0:
+        subject = "Notary commission has EXPIRED — action required"
+        headline = "Your commission has lapsed"
+        body_text = ("Records show your notary commission has expired. "
+                     "Please renew immediately before performing any further notarial acts.")
+        cta_color = "#DF0D1B"
+    elif days_left == 0:
+        subject = "Notary commission expires TODAY"
+        headline = "Your commission expires today"
+        body_text = ("Today is the last day your current notary commission is valid. "
+                     "Confirm your renewal is filed and effective before your next appointment.")
+        cta_color = "#DF0D1B"
+    else:
+        subject = f"Notary commission expires in {days_left} days"
+        headline = f"{days_left} days left on your commission"
+        body_text = (f"Your notary commission is scheduled to expire on "
+                     f"{expires_on.strftime('%B %d, %Y')}. Start your renewal now "
+                     f"so your journal never goes dark.")
+        cta_color = "#00317A"
+
+    html = f"""<!doctype html>
+<html><body style="margin:0;padding:0;background:#F4F7F9;font-family:Helvetica,Arial,sans-serif;color:#111827;">
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#F4F7F9;padding:32px 0;">
+  <tr><td align="center">
+    <table role="presentation" width="560" cellpadding="0" cellspacing="0" style="background:#ffffff;border:1px solid #E2E8F0;border-radius:4px;overflow:hidden;">
+      <tr>
+        <td style="background:#00317A;padding:20px 28px;">
+          <div style="color:#ffffff;font-family:Georgia,'Times New Roman',serif;font-size:20px;font-weight:700;">Domini Business Services</div>
+          <div style="color:rgba(255,255,255,0.7);font-size:10px;letter-spacing:2.5px;text-transform:uppercase;margin-top:2px;">Notarium · Commission Alerts</div>
+        </td>
+      </tr>
+      <tr><td style="background:#DF0D1B;height:3px;line-height:3px;font-size:0;">&nbsp;</td></tr>
+      <tr>
+        <td style="padding:32px 28px 8px;">
+          <div style="font-size:10px;letter-spacing:2.5px;text-transform:uppercase;color:{cta_color};margin-bottom:8px;">Commission alert</div>
+          <h1 style="font-family:Georgia,'Times New Roman',serif;font-size:26px;color:#00317A;margin:0 0 12px;">{headline}</h1>
+          <p style="font-size:14px;line-height:1.6;color:#4B5563;margin:0 0 18px;">Hi {notary_name or 'there'},</p>
+          <p style="font-size:14px;line-height:1.6;color:#111827;margin:0 0 22px;">{body_text}</p>
+          <table role="presentation" cellpadding="0" cellspacing="0"><tr><td style="background:{cta_color};border-radius:3px;">
+            <a href="{app_url}/settings" style="display:inline-block;padding:12px 22px;color:#ffffff;text-decoration:none;font-size:13px;font-weight:600;letter-spacing:0.5px;">Update commission details</a>
+          </td></tr></table>
+        </td>
+      </tr>
+      <tr>
+        <td style="padding:22px 28px;border-top:1px solid #E2E8F0;background:#F8FAFC;">
+          <div style="font-family:'Courier New',monospace;font-size:11px;color:#4B5563;">
+            Commission expires: <span style="color:#111827;">{expires_on.strftime('%B %d, %Y')}</span>
+          </div>
+          <div style="font-family:'Courier New',monospace;font-size:11px;color:#4B5563;margin-top:4px;">
+            Days remaining: <span style="color:#111827;">{days_left}</span>
+          </div>
+        </td>
+      </tr>
+      <tr>
+        <td style="padding:16px 28px;background:#00317A;color:rgba(255,255,255,0.55);font-size:10px;letter-spacing:2px;text-transform:uppercase;text-align:center;font-family:'Courier New',monospace;">
+          A Division of YFI Enterprises, LLC
+        </td>
+      </tr>
+    </table>
+    <div style="font-size:11px;color:#94A3B8;margin-top:14px;">
+      You are receiving this because commission alerts are enabled on your Notarium account.
+    </div>
+  </td></tr>
+</table></body></html>"""
+    return subject, html
+
+async def _send_email(to_email: str, subject: str, html: str) -> Optional[str]:
+    key = os.environ.get("EMERGENT_EMAIL_KEY")
+    from_name = os.environ.get("EMAIL_FROM_NAME", "Domini Business Services")
+    if not key:
+        logging.warning("EMERGENT_EMAIL_KEY not configured; skipping email send")
+        return None
+    payload = {"to": [to_email], "subject": subject, "html": html, "from_name": from_name}
+    try:
+        async with httpx.AsyncClient(timeout=30) as client:
+            resp = await client.post(
+                f"{EMAIL_BASE_URL}/api/v1/email/send",
+                headers={"X-Email-Key": key},
+                json=payload,
+            )
+        resp.raise_for_status()
+        return resp.json().get("id")
+    except httpx.HTTPStatusError as e:
+        logging.error(f"Commission alert email failed: {e.response.status_code} {e.response.text}")
+        return None
+    except Exception as e:
+        logging.error(f"Commission alert email error: {e}")
+        return None
+
+async def _scan_and_send_alerts() -> dict:
+    """Iterate users, send alerts for those hitting a new bucket. Returns summary."""
+    today = datetime.now(timezone.utc).date()
+    app_url = os.environ.get("ALERT_APP_URL", "").rstrip("/")
+    sent, skipped, errors = 0, 0, 0
+    async for u in db.users.find({}):
+        if not u.get("alerts_enabled", True):
+            skipped += 1; continue
+        expires_on = _parse_commission_date(u.get("commission_expires"))
+        if not expires_on:
+            skipped += 1; continue
+        bucket = _current_alert_bucket(expires_on, today)
+        if bucket is None:
+            skipped += 1; continue
+        if u.get("last_alert_bucket") == bucket:
+            skipped += 1; continue  # already alerted for this threshold
+        subject, html = _render_commission_email(
+            u.get("name", ""), (expires_on - today).days, expires_on, app_url)
+        email_id = await _send_email(u["email"], subject, html)
+        if email_id is not None:
+            await db.users.update_one(
+                {"_id": u["_id"]},
+                {"$set": {
+                    "last_alert_bucket": bucket,
+                    "last_alert_sent_at": datetime.now(timezone.utc).isoformat(),
+                    "last_alert_email_id": email_id,
+                }})
+            sent += 1
+        else:
+            errors += 1
+    return {"sent": sent, "skipped": skipped, "errors": errors, "date": today.isoformat()}
+
+@api.post("/cron/commission-alerts")
+async def cron_commission_alerts(
+    background: BackgroundTasks,
+    authorization: Optional[str] = Header(default=None),
+    x_webhook_id: Optional[str] = Header(default=None, alias="X-Webhook-Id"),
+):
+    # Cron endpoints must ack 2xx immediately; enqueue/background the actual work.
+    expected = os.environ.get("WEBHOOK_CRON_SECRET", "")
+    provided = ""
+    if authorization and authorization.startswith("Bearer "):
+        provided = authorization[7:]
+    if not expected or not hmac.compare_digest(expected, provided):
+        raise HTTPException(status_code=401, detail="Unauthorized")
+    # Idempotency: skip re-processing same webhook run
+    if x_webhook_id:
+        existing = await db.cron_runs.find_one({"run_id": x_webhook_id})
+        if existing:
+            return {"accepted": True, "duplicate": True, "run_id": x_webhook_id}
+        await db.cron_runs.insert_one({
+            "run_id": x_webhook_id,
+            "cron": "commission-alerts",
+            "received_at": datetime.now(timezone.utc).isoformat(),
+        })
+    background.add_task(_scan_and_send_alerts)
+    return {"accepted": True, "run_id": x_webhook_id}
+
+@api.post("/alerts/test")
+async def send_test_alert(user=Depends(get_current_user)):
+    """Send a preview commission alert to the notary immediately."""
+    today = datetime.now(timezone.utc).date()
+    expires_on = _parse_commission_date(user.get("commission_expires")) or (today + timedelta(days=45))
+    days_left = (expires_on - today).days
+    app_url = os.environ.get("ALERT_APP_URL", "").rstrip("/")
+    subject, html = _render_commission_email(user.get("name", ""), days_left, expires_on, app_url)
+    subject = "[Preview] " + subject
+    email_id = await _send_email(user["email"], subject, html)
+    if not email_id:
+        raise HTTPException(status_code=502, detail="Could not send email. Check EMERGENT_EMAIL_KEY.")
+    return {"ok": True, "email_id": email_id, "sent_to": user["email"]}
+
+@api.get("/alerts/status")
+async def alerts_status(user=Depends(get_current_user)):
+    """Preview: which upcoming buckets remain, and when the next alert is expected."""
+    today = datetime.now(timezone.utc).date()
+    expires_on = _parse_commission_date(user.get("commission_expires"))
+    if not expires_on:
+        return {"configured": False, "enabled": user.get("alerts_enabled", True)}
+    days_left = (expires_on - today).days
+    upcoming = []
+    for b in ALERT_BUCKETS:
+        alert_date = expires_on - timedelta(days=b)
+        if alert_date >= today:
+            upcoming.append({"days_out": b, "on": alert_date.isoformat()})
+    return {
+        "configured": True,
+        "enabled": user.get("alerts_enabled", True),
+        "commission_expires": expires_on.isoformat(),
+        "days_left": days_left,
+        "last_alert_bucket": user.get("last_alert_bucket"),
+        "last_alert_sent_at": user.get("last_alert_sent_at"),
+        "upcoming_alerts": upcoming,
     }
 
 # ---- Journal Entries ----
