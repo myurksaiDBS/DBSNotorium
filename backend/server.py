@@ -16,6 +16,7 @@ from typing import List, Optional, Annotated
 import bcrypt
 import jwt
 from bson import ObjectId
+from pymongo.errors import DuplicateKeyError
 from fastapi import FastAPI, APIRouter, HTTPException, Depends, Request, Response, Query, Header, BackgroundTasks
 from fastapi.responses import StreamingResponse
 from motor.motor_asyncio import AsyncIOMotorClient
@@ -484,8 +485,8 @@ async def cron_commission_alerts(
                 "cron": "commission-alerts",
                 "received_at": datetime.now(timezone.utc).isoformat(),
             })
-        except Exception:
-            # DuplicateKeyError → another worker already accepted this run.
+        except DuplicateKeyError:
+            # Another worker already accepted this delivery.
             return {"accepted": True, "duplicate": True, "run_id": x_webhook_id}
     background.add_task(_scan_and_send_alerts)
     return {"accepted": True, "run_id": x_webhook_id}

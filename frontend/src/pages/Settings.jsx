@@ -129,9 +129,11 @@ export default function Settings() {
           </div>
 
           <p className="text-xs text-[#4B5563] leading-relaxed">
-            We'll email <span className="font-medium text-[#111827]">{user?.email}</span> at
-            <span className="font-mono-plex text-[11px] mx-1">60 · 30 · 14 · 7 · 1</span>
-            days before your commission expires — plus on expiration day and if it lapses.
+            {`We'll email `}
+            <span className="font-medium text-[#111827]">{user?.email}</span>
+            {` at `}
+            <span className="font-mono-plex text-[11px]">60 · 30 · 14 · 7 · 1</span>
+            {` days before your commission expires — plus on expiration day and if it lapses.`}
           </p>
 
           <div className="mt-4 border-t border-[#E2E8F0] pt-4 space-y-2 text-xs">
