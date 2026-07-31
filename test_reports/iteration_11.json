@@ -1,0 +1,31 @@
+{
+  "summary": "Focused backend re-verification passed against the public preview URL: lowercase and uppercase forms of the same valid ObjectId returned the identical single-row email-history result.",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/backend_test.py",
+    "/app/test_reports/pytest/notarium_email_history_case_iteration11.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [],
+  "updated_files": [
+    "/app/test_reports/pytest/notarium_email_history_case_iteration11.xml",
+    "/app/test_reports/iteration_11.json"
+  ],
+  "success_rate": {
+    "backend": "100% (1/1 focused regression passed)",
+    "frontend": "Not tested (backend-only request)"
+  },
+  "seed_data_creation": "The existing focused test temporarily created one journal entry and one certificate email audit row, then removed the entry, audit row, and auto-created client during cleanup. No real email was sent.",
+  "should_call_test_agent_after_fix": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Iteration 11 ran only TestNotariumIteration9Features::test_email_history_accepts_equivalent_uppercase_object_id once against REACT_APP_BACKEND_URL. It passed in 2.00 seconds; both forms returned HTTP 200, one row, the same row ID, and the seeded email_id/status.",
+  "rca_of_the_issue": "Resolved: entry_email_history now canonicalizes the route identifier through ObjectId and queries certificate_email_log with str(entry_oid), so hex case no longer affects the stored string match."
+}

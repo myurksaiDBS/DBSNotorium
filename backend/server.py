@@ -1003,7 +1003,7 @@ async def entry_email_history(entry_id: str, user=Depends(get_current_user)):
     if not entry:
         raise HTTPException(status_code=404, detail="Entry not found")
     docs = await db.certificate_email_log.find(
-        {"user_id": user["_id"], "entry_id": entry_id}
+        {"user_id": user["_id"], "entry_id": str(entry_oid)}
     ).sort("sent_at", -1).to_list(200)
     return [{
         "id": str(d["_id"]),
