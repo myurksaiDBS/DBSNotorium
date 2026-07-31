@@ -1,0 +1,57 @@
+{
+  "summary": "Backend-only billing verification completed against the public preview URL. All 15 scoped Stripe billing, trial gate, admin bypass, ownership-isolation, portal, and regression tests passed, including real Stripe test-mode monthly/yearly Checkout Session creation and Mongo transaction persistence. Auxiliary auth playbook checks passed for secure httpOnly cookies and the admin bcrypt hash, but failed for distributed brute-force lockout and credentialed explicit-origin CORS.",
+  "backend_issues": {
+    "critical": [
+      {
+        "endpoint": "POST /api/auth/login",
+        "issue": "Brute-force lockout does not trigger after five failures through the public ingress. Six attempts returned 401; Mongo showed two counters at 3 each because request.client.host alternated between 10.49.172.66 and 10.49.172.69, fragmenting the IP+email key.",
+        "priority": "HIGH"
+      },
+      {
+        "endpoint": "OPTIONS /api/auth/me (CORS preflight)",
+        "issue": "Public preflight returns Access-Control-Allow-Origin: * and omits Access-Control-Allow-Credentials. This fails the required explicit-origin credentialed CORS contract for cookie auth; server.py also hardcodes allow_origins=['*'] and allow_credentials=False.",
+        "priority": "HIGH"
+      }
+    ],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_billing.py",
+    "/app/backend/tests/backend_test.py",
+    "/app/test_reports/pytest/notarium_billing_iteration13.xml",
+    "/app/test_reports/pytest/notarium_auth_playbook_iteration13.xml"
+  ],
+  "action_items": [
+    "Make login throttling consistent across replicas/proxy hops: do not key counters by the internal request.client.host; use a trusted normalized client identity and/or account key with an atomic shared Mongo increment, then retest five failures plus the sixth 429.",
+    "Configure explicit allowed origins from environment and allow credentials for JWT cookies; verify public preflight returns the requesting approved origin plus Access-Control-Allow-Credentials: true.",
+    "Validate billing checkout origin_url against an application allowlist, or derive success/cancel URLs from the configured app URL, to prevent authenticated open redirects after Stripe checkout.",
+    "Move synchronous Stripe SDK network calls out of async route execution (async Stripe methods or a worker thread) so checkout, portal, session polling, and webhook processing do not block the FastAPI event loop."
+  ],
+  "critical_code_review_comments": [
+    "server.py is 2,208 lines and should be split into focused auth, billing, journal, intake, and admin modules.",
+    "billing_checkout trusts caller-controlled origin_url for Stripe success_url/cancel_url without scheme or host allowlisting.",
+    "All Stripe SDK network operations in async endpoints/helpers are synchronous (Price.list, Customer.create, Checkout Session create/retrieve, Billing Portal create, Subscription.retrieve), which can block unrelated requests.",
+    "The subscription dependency is absent from destructive/mutating routes such as DELETE entries/clients/document-types/intakes and POST intakes/{id}/mark-used. Confirm whether the stated hard block is intended to cover all writes, not only the specifically tested create/update routes.",
+    "The startup admin seed correctly rehashes and updates the configured name when the configured password no longer verifies; the current stored admin hash was verified as bcrypt $2b$ and matches the configured password."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_billing.py",
+    "/app/test_reports/pytest/notarium_billing_iteration13.xml",
+    "/app/test_reports/pytest/notarium_auth_playbook_iteration13.xml",
+    "/app/test_reports/iteration_13.json"
+  ],
+  "success_rate": {
+    "backend": "89% overall (17/19 executed checks passed); billing scope 100% (15/15)",
+    "frontend": "Not tested (backend-only request)"
+  },
+  "seed_data_creation": "Created fresh, foreign, never-subscribed, and 20-day-expired notary users; seeded one expired-user journal entry; created two real Stripe test-mode Checkout Sessions/customers and matching Mongo payment transaction rows; temporarily expired the admin and created one bypass entry. Mongo test users/resources/transactions and Stripe test customers were cleaned up; immutable Stripe test Checkout Session history remains in the sandbox.",
+  "should_call_test_agent_after_fix": true,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Billing tests use the public REACT_APP_BACKEND_URL and cover exact plan payloads, 13/14 trial days, unauthenticated/unknown checkout errors, monthly/yearly Stripe URLs, transaction DB fields, cross-user session 404, owner session status, portal 400, five required expired-trial 402 gates, read-only GET, admin expired bypass, and six regression GETs. Re-run test_billing.py after billing changes. Auth playbook failures are reproducible at public ingress; six login failures split into two Mongo identifiers because two internal client hosts alternated.",
+  "rca_of_the_issue": "The lockout key is f'{request.client.host}:{email}'. Public ingress requests alternate between internal proxy addresses, so one attack is split across counters and never reaches five on either key. CORS is explicitly configured in server.py with wildcard origins and credentials disabled, matching the failed public preflight. Billing functionality itself passed all requested checks."
+}

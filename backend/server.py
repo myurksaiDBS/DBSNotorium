@@ -34,7 +34,19 @@ from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, 
 from reportlab.lib.enums import TA_CENTER, TA_LEFT
 from reportlab.lib.utils import ImageReader
 
+import stripe
+
 LOGO_PATH = ROOT_DIR / "assets" / "domini-logo.png"
+
+# -------- Stripe --------
+stripe.api_key = os.environ.get("STRIPE_SECRET_KEY") or "sk_test_emergent"
+STRIPE_WEBHOOK_SECRET = os.environ.get("STRIPE_WEBHOOK_SECRET", "")
+STRIPE_PUBLISHABLE_KEY = os.environ.get("STRIPE_PUBLISHABLE_KEY", "")
+TRIAL_DAYS = 14
+BILLING_PLANS = {
+    "notarium_pro_monthly": {"label": "Monthly", "amount": 19.00, "interval": "month"},
+    "notarium_pro_yearly":  {"label": "Yearly",  "amount": 190.00, "interval": "year"},
+}
 
 # -------- Mongo --------
 mongo_url = os.environ['MONGO_URL']
@@ -356,15 +368,299 @@ async def admin_roster(user=Depends(get_current_user)):
         })
     return {"total": len(rows), "notaries": rows}
 
+# -------- Billing helpers --------
+def _trial_end(user: dict) -> datetime:
+    created = user.get("created_at")
+    try:
+        base = datetime.fromisoformat(created) if created else datetime.now(timezone.utc)
+    except (ValueError, TypeError):
+        base = datetime.now(timezone.utc)
+    if base.tzinfo is None:
+        base = base.replace(tzinfo=timezone.utc)
+    return base + timedelta(days=TRIAL_DAYS)
+
+
+def _subscription_snapshot(user: dict) -> dict:
+    """Compute the user's effective billing state.
+    States: active | trialing | expired | canceled
+    """
+    role = user.get("role", "notary")
+    status = user.get("subscription_status")
+    if status == "active":
+        effective = "active"
+    else:
+        end = _trial_end(user)
+        now = datetime.now(timezone.utc)
+        if now < end:
+            effective = "trialing"
+        else:
+            effective = status if status in ("canceled", "past_due") else "expired"
+    trial_end = _trial_end(user)
+    now = datetime.now(timezone.utc)
+    return {
+        "effective_status": effective,
+        "raw_status": status,
+        "plan_lookup_key": user.get("subscription_plan_key"),
+        "plan_label": BILLING_PLANS.get(user.get("subscription_plan_key") or "", {}).get("label"),
+        "trial_days_left": max(0, (trial_end - now).days) if effective == "trialing" else 0,
+        "trial_ends_at": trial_end.isoformat(),
+        "current_period_end": user.get("subscription_current_period_end"),
+        "cancel_at_period_end": user.get("subscription_cancel_at_period_end", False),
+        "role": role,
+        "is_admin_bypass": role == "admin",
+    }
+
+
+async def require_active_subscription(user=Depends(get_current_user)) -> dict:
+    """Dependency: gate write actions when trial expired and no active plan.
+    Admins always bypass."""
+    if user.get("role") == "admin":
+        return user
+    snap = _subscription_snapshot(user)
+    if snap["effective_status"] in ("active", "trialing"):
+        return user
+    raise HTTPException(
+        status_code=402,
+        detail={
+            "error": "subscription_required",
+            "message": "Your free trial has ended. Subscribe to continue using Notarium.",
+            "billing_status": snap["effective_status"],
+        },
+    )
+
+
 @api.get("/billing/status")
 async def billing_status(user=Depends(get_current_user)):
-    """Placeholder billing endpoint. Stripe subscription will be added next iteration."""
+    snap = _subscription_snapshot(user)
     return {
-        "provider": "not_configured",
-        "status": user.get("subscription_status", "trial"),
-        "plan": user.get("subscription_plan", "Starter"),
-        "note": "Stripe subscriptions will be enabled in the next iteration.",
+        "provider": "stripe",
+        "publishable_key": STRIPE_PUBLISHABLE_KEY,
+        "plans": [
+            {"lookup_key": "notarium_pro_monthly", "label": "Monthly",
+             "amount": 19.00, "currency": "usd", "interval": "month"},
+            {"lookup_key": "notarium_pro_yearly", "label": "Yearly",
+             "amount": 190.00, "currency": "usd", "interval": "year",
+             "savings_label": "Save $38 (2 months free)"},
+        ],
+        **snap,
     }
+
+
+class CheckoutIn(BaseModel):
+    lookup_key: str
+    origin_url: str
+
+
+@api.post("/billing/checkout")
+async def billing_checkout(payload: CheckoutIn, user=Depends(get_current_user)):
+    if payload.lookup_key not in BILLING_PLANS:
+        raise HTTPException(status_code=400, detail="Unknown plan")
+
+    prices = stripe.Price.list(lookup_keys=[payload.lookup_key], active=True, limit=1).data
+    if not prices:
+        raise HTTPException(status_code=500, detail=f"Price not found: {payload.lookup_key}")
+    price = prices[0]
+
+    # Reuse or create Stripe customer
+    customer_id = user.get("stripe_customer_id")
+    if not customer_id:
+        cust = stripe.Customer.create(
+            email=user.get("email"),
+            name=user.get("name"),
+            metadata={"user_id": user["_id"]},
+        )
+        customer_id = cust.id
+        await db.users.update_one(
+            {"_id": ObjectId(user["_id"])},
+            {"$set": {"stripe_customer_id": customer_id}},
+        )
+
+    origin = payload.origin_url.rstrip("/")
+    session_kwargs = dict(
+        customer=customer_id,
+        line_items=[{"price": price.id, "quantity": 1}],
+        mode="subscription",
+        success_url=f"{origin}/settings?tab=billing&session_id={{CHECKOUT_SESSION_ID}}",
+        cancel_url=f"{origin}/settings?tab=billing&canceled=1",
+        metadata={"user_id": user["_id"], "lookup_key": payload.lookup_key},
+        subscription_data={
+            "trial_period_days": TRIAL_DAYS,
+            "metadata": {"user_id": user["_id"], "lookup_key": payload.lookup_key},
+        },
+    )
+    # SMP-eligible (US SaaS): use managed_payments; fall back to Stripe Tax if ineligible
+    try:
+        session = stripe.checkout.Session.create(**session_kwargs, managed_payments={"enabled": True})
+    except stripe.error.InvalidRequestError as e:
+        msg = (getattr(e, "user_message", "") or "").lower()
+        if "managed payments" in msg or "ineligible" in msg:
+            session = stripe.checkout.Session.create(
+                **session_kwargs,
+                automatic_tax={"enabled": True},
+                billing_address_collection="required",
+            )
+        else:
+            raise HTTPException(status_code=500, detail=str(e))
+
+    await db.payment_transactions.insert_one({
+        "session_id": session.id,
+        "user_id": user["_id"],
+        "customer_id": customer_id,
+        "lookup_key": payload.lookup_key,
+        "amount": (price.unit_amount or 0),
+        "currency": price.currency,
+        "status": "initiated",
+        "payment_status": "pending",
+        "created_at": datetime.now(timezone.utc),
+        "updated_at": datetime.now(timezone.utc),
+    })
+    return {"checkout_url": session.url, "session_id": session.id}
+
+
+@api.get("/billing/session/{session_id}")
+async def billing_session_status(session_id: str, user=Depends(get_current_user)):
+    record = await db.payment_transactions.find_one({"session_id": session_id})
+    if not record or record.get("user_id") != user["_id"]:
+        raise HTTPException(status_code=404, detail="Session not found")
+    # Poll Stripe live if still pending — webhook may lag
+    if record.get("payment_status") != "paid":
+        try:
+            s = stripe.checkout.Session.retrieve(session_id)
+            if s.payment_status == "paid" or s.status == "complete":
+                await _apply_subscription_from_session(s)
+                record = await db.payment_transactions.find_one({"session_id": session_id})
+        except stripe.error.StripeError:
+            pass
+    return {
+        "session_id": record["session_id"],
+        "status": record.get("status"),
+        "payment_status": record.get("payment_status"),
+    }
+
+
+@api.post("/billing/portal")
+async def billing_portal(request: Request, user=Depends(get_current_user)):
+    customer_id = user.get("stripe_customer_id")
+    if not customer_id:
+        raise HTTPException(status_code=400, detail="No Stripe customer for this account")
+    body = {}
+    try:
+        body = await request.json()
+    except Exception:
+        pass
+    origin = (body or {}).get("origin_url") or os.environ.get("ALERT_APP_URL", "")
+    try:
+        portal = stripe.billing_portal.Session.create(
+            customer=customer_id,
+            return_url=f"{origin.rstrip('/')}/settings?tab=billing",
+        )
+    except stripe.error.InvalidRequestError as e:
+        raise HTTPException(status_code=500, detail=f"Stripe portal error: {e.user_message or str(e)}")
+    return {"portal_url": portal.url}
+
+
+async def _apply_subscription_from_session(session_obj) -> None:
+    """Update DB with subscription info from a completed checkout session."""
+    session_id = session_obj["id"] if isinstance(session_obj, dict) else session_obj.id
+    metadata = session_obj.get("metadata") if isinstance(session_obj, dict) else (session_obj.metadata or {})
+    user_id = (metadata or {}).get("user_id")
+    lookup_key = (metadata or {}).get("lookup_key")
+    subscription_id = session_obj.get("subscription") if isinstance(session_obj, dict) else session_obj.subscription
+
+    period_end = None
+    sub_status = "active"
+    cancel_at_period_end = False
+    if subscription_id:
+        try:
+            sub = stripe.Subscription.retrieve(subscription_id)
+            sub_status = sub.status  # trialing | active | ...
+            cancel_at_period_end = bool(sub.cancel_at_period_end)
+            if sub.current_period_end:
+                period_end = datetime.fromtimestamp(sub.current_period_end, tz=timezone.utc).isoformat()
+        except stripe.error.StripeError:
+            pass
+
+    await db.payment_transactions.update_one(
+        {"session_id": session_id, "payment_status": {"$ne": "paid"}},
+        {"$set": {
+            "status": "completed",
+            "payment_status": "paid",
+            "stripe_subscription_id": subscription_id,
+            "updated_at": datetime.now(timezone.utc),
+        }},
+    )
+    if user_id:
+        try:
+            await db.users.update_one(
+                {"_id": ObjectId(user_id)},
+                {"$set": {
+                    "subscription_status": "active" if sub_status in ("active", "trialing") else sub_status,
+                    "subscription_plan_key": lookup_key,
+                    "stripe_subscription_id": subscription_id,
+                    "subscription_current_period_end": period_end,
+                    "subscription_cancel_at_period_end": cancel_at_period_end,
+                }},
+            )
+        except Exception as e:
+            logging.error(f"Failed to update user subscription: {e}")
+
+
+async def _sync_subscription(subscription_obj) -> None:
+    """Sync subscription state to user record (used by customer.subscription.* webhooks)."""
+    sub_id = subscription_obj.get("id") if isinstance(subscription_obj, dict) else subscription_obj.id
+    status = subscription_obj.get("status") if isinstance(subscription_obj, dict) else subscription_obj.status
+    cancel = subscription_obj.get("cancel_at_period_end") if isinstance(subscription_obj, dict) else subscription_obj.cancel_at_period_end
+    cpe = subscription_obj.get("current_period_end") if isinstance(subscription_obj, dict) else subscription_obj.current_period_end
+    period_end = datetime.fromtimestamp(cpe, tz=timezone.utc).isoformat() if cpe else None
+
+    # Map status: trialing/active → active; canceled/incomplete_expired → canceled; past_due → past_due
+    if status in ("active", "trialing"):
+        mapped = "active"
+    elif status in ("canceled", "incomplete_expired", "unpaid"):
+        mapped = "canceled"
+    else:
+        mapped = status
+
+    await db.users.update_one(
+        {"stripe_subscription_id": sub_id},
+        {"$set": {
+            "subscription_status": mapped,
+            "subscription_current_period_end": period_end,
+            "subscription_cancel_at_period_end": bool(cancel),
+        }},
+    )
+
+
+@api.post("/stripe/webhook")
+async def stripe_webhook(request: Request):
+    payload = await request.body()
+    sig = request.headers.get("stripe-signature", "")
+    try:
+        event = stripe.Webhook.construct_event(payload, sig, STRIPE_WEBHOOK_SECRET)
+    except stripe.error.SignatureVerificationError:
+        raise HTTPException(status_code=400, detail="Invalid signature")
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Webhook error: {e}")
+
+    t = event["type"]
+    obj = event["data"]["object"]
+
+    if t == "checkout.session.completed":
+        await _apply_subscription_from_session(obj)
+    elif t == "customer.subscription.created":
+        await _sync_subscription(obj)
+    elif t == "customer.subscription.updated":
+        await _sync_subscription(obj)
+    elif t == "customer.subscription.deleted":
+        await _sync_subscription(obj)
+    elif t == "invoice.payment_failed":
+        sub_id = obj.get("subscription")
+        if sub_id:
+            await db.users.update_one(
+                {"stripe_subscription_id": sub_id},
+                {"$set": {"subscription_status": "past_due"}},
+            )
+    return {"status": "ok"}
 
 # ---- Commission Alerts (Resend email) ----
 EMAIL_BASE_URL = "https://integrations.emergentagent.com"
@@ -619,7 +915,7 @@ async def list_entries(
     return [serialize_entry(d) for d in docs]
 
 @api.post("/entries")
-async def create_entry(payload: EntryIn, user=Depends(get_current_user)):
+async def create_entry(payload: EntryIn, user=Depends(require_active_subscription)):
     doc = payload.model_dump()
     doc["user_id"] = user["_id"]
     doc["created_at"] = datetime.now(timezone.utc).isoformat()
@@ -651,7 +947,7 @@ async def get_entry(entry_id: str, user=Depends(get_current_user)):
     return serialize_entry(doc)
 
 @api.put("/entries/{entry_id}")
-async def update_entry(entry_id: str, payload: EntryIn, user=Depends(get_current_user)):
+async def update_entry(entry_id: str, payload: EntryIn, user=Depends(require_active_subscription)):
     updates = payload.model_dump()
     updates["updated_at"] = datetime.now(timezone.utc).isoformat()
     result = await db.entries.update_one(
@@ -966,7 +1262,7 @@ class CertificateEmailIn(BaseModel):
 
 @api.post("/entries/{entry_id}/email-certificate")
 async def email_certificate(entry_id: str, payload: CertificateEmailIn,
-                            user=Depends(get_current_user)):
+                            user=Depends(require_active_subscription)):
     entry_oid = _to_oid(entry_id)
     doc = await db.entries.find_one({"_id": entry_oid, "user_id": user["_id"]})
     if not doc:
@@ -1559,7 +1855,7 @@ async def list_clients(q: Optional[str] = None, user=Depends(get_current_user)):
     return [serialize_generic(d) for d in docs]
 
 @api.post("/clients")
-async def create_client(payload: ClientIn, user=Depends(get_current_user)):
+async def create_client(payload: ClientIn, user=Depends(require_active_subscription)):
     doc = payload.model_dump()
     doc["user_id"] = user["_id"]
     doc["created_at"] = datetime.now(timezone.utc).isoformat()
@@ -1568,7 +1864,7 @@ async def create_client(payload: ClientIn, user=Depends(get_current_user)):
     return serialize_generic(doc)
 
 @api.put("/clients/{client_id}")
-async def update_client(client_id: str, payload: ClientIn, user=Depends(get_current_user)):
+async def update_client(client_id: str, payload: ClientIn, user=Depends(require_active_subscription)):
     result = await db.clients.update_one(
         {"_id": ObjectId(client_id), "user_id": user["_id"]},
         {"$set": payload.model_dump()})
@@ -1602,7 +1898,7 @@ async def list_doc_types(user=Depends(get_current_user)):
     return [serialize_generic(d) for d in docs]
 
 @api.post("/document-types")
-async def create_doc_type(payload: DocTypeIn, user=Depends(get_current_user)):
+async def create_doc_type(payload: DocTypeIn, user=Depends(require_active_subscription)):
     doc = payload.model_dump()
     doc["user_id"] = user["_id"]
     doc["created_at"] = datetime.now(timezone.utc).isoformat()
@@ -1646,7 +1942,7 @@ async def list_intakes(user=Depends(get_current_user)):
     return [_serialize_intake(d, user.get("name", "")) for d in docs]
 
 @api.post("/intakes")
-async def create_intake(payload: IntakeCreateIn, user=Depends(get_current_user)):
+async def create_intake(payload: IntakeCreateIn, user=Depends(require_active_subscription)):
     token = _secrets.token_urlsafe(18)
     now = datetime.now(timezone.utc)
     expires = now + timedelta(hours=max(1, min(payload.expires_hours, 24 * 30)))

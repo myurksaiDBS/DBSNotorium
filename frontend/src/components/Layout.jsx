@@ -1,9 +1,10 @@
 import { NavLink, Outlet, useNavigate } from "react-router-dom";
 import { useAuth } from "@/context/AuthContext";
 import {
-  LayoutDashboard, BookOpen, Users, FileType2, Settings, LogOut, Link2, Crown,
+  LayoutDashboard, BookOpen, Users, FileType2, Settings, LogOut, Link2, Crown, CreditCard,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import BillingBanner from "@/components/BillingBanner";
 
 const baseNav = [
   { to: "/", label: "Dashboard", icon: LayoutDashboard, end: true, testid: "nav-dashboard" },
@@ -12,6 +13,7 @@ const baseNav = [
   { to: "/clients", label: "Signers", icon: Users, testid: "nav-clients" },
   { to: "/document-types", label: "Document Types", icon: FileType2, testid: "nav-doctypes" },
   { to: "/settings", label: "Commission", icon: Settings, testid: "nav-settings" },
+  { to: "/billing", label: "Billing", icon: CreditCard, testid: "nav-billing" },
 ];
 
 const adminNav = { to: "/admin/roster", label: "Roster", icon: Crown, testid: "nav-roster" };
@@ -87,6 +89,7 @@ export default function Layout() {
       </aside>
 
       <main className="flex-1 ml-64">
+        <BillingBanner />
         <div className="max-w-[1400px] mx-auto px-10 py-10">
           <Outlet />
         </div>
