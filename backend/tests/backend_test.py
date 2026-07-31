@@ -1352,14 +1352,19 @@ class TestNotariumIteration9Features:
 
         _db_call(seed_log)
         try:
-            response = authenticated_client.get(
+            lowercase_response = authenticated_client.get(
+                f"{BASE_URL}/api/entries/{entry_id}/email-history", timeout=20
+            )
+            uppercase_response = authenticated_client.get(
                 f"{BASE_URL}/api/entries/{entry_id.upper()}/email-history", timeout=20
             )
-            assert response.status_code == 200, response.text
-            rows = response.json()
-            assert len(rows) == 1
-            assert rows[0]["email_id"] == test_email_id
-            assert rows[0]["status"] == "sent"
+            assert lowercase_response.status_code == uppercase_response.status_code == 200
+            lowercase_rows = lowercase_response.json()
+            uppercase_rows = uppercase_response.json()
+            assert len(lowercase_rows) == len(uppercase_rows) == 1
+            assert [row["id"] for row in uppercase_rows] == [row["id"] for row in lowercase_rows]
+            assert uppercase_rows[0]["email_id"] == test_email_id
+            assert uppercase_rows[0]["status"] == "sent"
         finally:
             async def cleanup(database):
                 await database.certificate_email_log.delete_many({"entry_id": entry_id})

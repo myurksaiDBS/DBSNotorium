@@ -1,0 +1,42 @@
+{
+  "summary": "Focused backend re-verification completed against the public app. The sent/failed audit-history regression passed, but the uppercase ObjectId defect remains: lowercase returned one row while the equivalent uppercase ID returned none.",
+  "backend_issues": {
+    "critical": [
+      {
+        "endpoint": "GET /api/entries/{id}/email-history",
+        "issue": "Equivalent uppercase-hex ObjectId still returns an empty history. Focused reproduction observed lowercase count 1 and uppercase count 0 for the same entry and seeded audit row.",
+        "priority": "HIGH"
+      }
+    ],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/backend_test.py",
+    "/app/test_reports/pytest/notarium_email_history_case_iteration10.xml",
+    "/app/test_reports/pytest/notarium_email_history_regression_iteration10.xml"
+  ],
+  "action_items": [
+    "Apply the intended one-line fix in entry_email_history: filter certificate_email_log with str(entry_oid), not the raw entry_id route string, then rerun the focused test."
+  ],
+  "critical_code_review_comments": [
+    "The deployed/current /app/backend/server.py still contains {\"entry_id\": entry_id} at the history query; the claimed canonicalizing change is not present."
+  ],
+  "updated_files": [
+    "/app/backend/tests/backend_test.py",
+    "/app/test_reports/iteration_10.json"
+  ],
+  "success_rate": {
+    "backend": "50% (1/2 selected tests passed)",
+    "frontend": "Not tested (backend-only request)"
+  },
+  "seed_data_creation": "Temporary journal entries, audit rows, client data, and foreign test account/resources were created and removed by fixtures. One real certificate email was sent to the admin for the requested sent/failed audit regression; the failed provider attempt did not deliver.",
+  "should_call_test_agent_after_fix": true,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Run only TestNotariumIteration9Features::test_email_history_accepts_equivalent_uppercase_object_id after the server query is changed. The test now explicitly compares lowercase and uppercase row counts and row IDs. The sent/failed-both-logged regression passed.",
+  "rca_of_the_issue": "entry_email_history successfully canonicalizes the route value into entry_oid for ownership lookup, but then queries certificate_email_log using the original case-sensitive route string. Stored entry_id values are lowercase, so uppercase route text cannot match. Current source lines 1005-1007 confirm the filter still uses entry_id rather than str(entry_oid)."
+}
