@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import { useLocation, useNavigate } from "react-router-dom";
 import { api } from "@/api";
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -58,6 +59,33 @@ export default function Journal() {
   const [startDate, setStartDate] = useState("");
   const [endDate, setEndDate] = useState("");
   const sigRef = useRef(null);
+  const location = useLocation();
+  const nav = useNavigate();
+
+  // If arriving from an Intake, prefill and open the New Entry dialog
+  useEffect(() => {
+    const prefill = location.state?.prefill;
+    if (prefill) {
+      setEditingId(null);
+      setForm({
+        ...emptyForm,
+        signer_name: prefill.signer_name || "",
+        signer_address: prefill.signer_address || "",
+        signer_phone: prefill.signer_phone || "",
+        signer_email: prefill.signer_email || "",
+        id_type: prefill.id_type || "Driver's License",
+        id_number: prefill.id_number || "",
+        id_expiration: prefill.id_expiration || "",
+        id_issued_by: prefill.id_issued_by || "",
+        notes: prefill.notes || "",
+        document_type: form.document_type,
+      });
+      setOpen(true);
+      // Clear location state so refresh doesn't reopen
+      nav("/journal", { replace: true, state: {} });
+    }
+    // eslint-disable-next-line
+  }, [location.state]);
 
   const loadEntries = async () => {
     const params = {};

@@ -1,13 +1,14 @@
 import { NavLink, Outlet, useNavigate } from "react-router-dom";
 import { useAuth } from "@/context/AuthContext";
 import {
-  LayoutDashboard, BookOpen, Users, FileType2, Settings, LogOut,
+  LayoutDashboard, BookOpen, Users, FileType2, Settings, LogOut, Link2,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 
 const nav = [
   { to: "/", label: "Dashboard", icon: LayoutDashboard, end: true, testid: "nav-dashboard" },
   { to: "/journal", label: "Journal", icon: BookOpen, testid: "nav-journal" },
+  { to: "/intakes", label: "Intake Links", icon: Link2, testid: "nav-intakes" },
   { to: "/clients", label: "Signers", icon: Users, testid: "nav-clients" },
   { to: "/document-types", label: "Document Types", icon: FileType2, testid: "nav-doctypes" },
   { to: "/settings", label: "Commission", icon: Settings, testid: "nav-settings" },

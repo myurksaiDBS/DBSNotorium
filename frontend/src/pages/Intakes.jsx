@@ -1,0 +1,240 @@
+import { useEffect, useState } from "react";
+import { api } from "@/api";
+import { useNavigate } from "react-router-dom";
+import { Card } from "@/components/ui/card";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { Textarea } from "@/components/ui/textarea";
+import { Badge } from "@/components/ui/badge";
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter, DialogDescription } from "@/components/ui/dialog";
+import { Plus, Copy, Trash2, MessageSquare, ArrowRight, Link2 } from "lucide-react";
+import { toast } from "sonner";
+
+const STATUS_STYLE = {
+  pending:   { label: "Awaiting signer", cls: "bg-[#FEF9EC] text-[#7A5B00] border-[#F0D28A]" },
+  completed: { label: "Ready",            cls: "bg-[#E8F5EC] text-[#146334] border-[#B7E0C1]" },
+  used:      { label: "Used",             cls: "bg-[#F4F7F9] text-[#4B5563] border-[#E2E8F0]" },
+  expired:   { label: "Expired",          cls: "bg-[#FDECEC] text-[#991B1B] border-[#F4B4B4]" },
+};
+
+export default function Intakes() {
+  const [items, setItems] = useState([]);
+  const [open, setOpen] = useState(false);
+  const [form, setForm] = useState({ label: "", appointment_note: "", expires_hours: 168 });
+  const [detail, setDetail] = useState(null);
+  const nav = useNavigate();
+
+  const load = async () => {
+    const { data } = await api.get("/intakes");
+    setItems(data);
+  };
+  useEffect(() => { load(); }, []);
+
+  const create = async (e) => {
+    e.preventDefault();
+    try {
+      const { data } = await api.post("/intakes", form);
+      toast.success("Pre-fill link created");
+      setOpen(false);
+      setForm({ label: "", appointment_note: "", expires_hours: 168 });
+      load();
+      // Auto-open detail so user can copy
+      setDetail(data);
+    } catch { toast.error("Failed to create link"); }
+  };
+
+  const remove = async (id) => {
+    if (!window.confirm("Delete this intake link?")) return;
+    await api.delete(`/intakes/${id}`);
+    load();
+    toast.success("Intake deleted");
+  };
+
+  const publicUrl = (token) =>
+    `${window.location.origin}/intake/${token}`;
+
+  const copyLink = (token) => {
+    navigator.clipboard.writeText(publicUrl(token));
+    toast.success("Link copied");
+  };
+
+  const smsBody = (item) => {
+    const url = publicUrl(item.token);
+    return `Hi — this is ${item.notary_name || "your notary"} with Domini Business Services. Please fill out your signer details before we meet: ${url}`;
+  };
+
+  const copySMS = (item) => {
+    navigator.clipboard.writeText(smsBody(item));
+    toast.success("Message copied");
+  };
+
+  const openEntryFromIntake = async (item) => {
+    // Mark as used, then hand off to Journal with prefill data via location state
+    try { await api.post(`/intakes/${item.id}/mark-used`); } catch {}
+    nav("/journal", { state: { prefill: item.data, intakeId: item.id } });
+  };
+
+  return (
+    <div className="space-y-6" data-testid="intakes-page">
+      <div className="flex items-end justify-between border-b border-[#E2E8F0] pb-6">
+        <div>
+          <div className="text-[11px] uppercase tracking-[0.25em] text-[#DF0D1B] mb-2">Pre-Appointment</div>
+          <h1 className="font-serif text-4xl text-[#00317A]">Signer Intake Links</h1>
+          <p className="text-sm text-[#4B5563] mt-1">
+            Send signers a Domini-branded page to enter their name, address and ID before you meet.
+          </p>
+        </div>
+        <Button onClick={() => setOpen(true)}
+          className="rounded-sm bg-[#00317A] hover:bg-[#00265E] text-white"
+          data-testid="new-intake-btn">
+          <Plus className="w-4 h-4 mr-2" /> New Intake Link
+        </Button>
+      </div>
+
+      <Card className="border-[#E2E8F0] rounded-sm shadow-none bg-white overflow-hidden">
+        <Table>
+          <TableHeader>
+            <TableRow className="bg-[#F4F7F9] hover:bg-[#F4F7F9]">
+              <TableHead className="text-[10px] uppercase tracking-widest text-[#4B5563]">Label</TableHead>
+              <TableHead className="text-[10px] uppercase tracking-widest text-[#4B5563]">Signer</TableHead>
+              <TableHead className="text-[10px] uppercase tracking-widest text-[#4B5563]">Status</TableHead>
+              <TableHead className="text-[10px] uppercase tracking-widest text-[#4B5563]">Created</TableHead>
+              <TableHead className="text-[10px] uppercase tracking-widest text-[#4B5563]">Expires</TableHead>
+              <TableHead className="text-[10px] uppercase tracking-widest text-[#4B5563] text-right">Actions</TableHead>
+            </TableRow>
+          </TableHeader>
+          <TableBody>
+            {items.length === 0 ? (
+              <TableRow><TableCell colSpan={6} className="text-center py-12 text-[#4B5563]">
+                No intake links yet. Create one and share the link with your signer.
+              </TableCell></TableRow>
+            ) : items.map((it, idx) => {
+              const style = STATUS_STYLE[it.status] || STATUS_STYLE.pending;
+              return (
+                <TableRow key={it.id} className="row-anim" style={{ animationDelay: `${Math.min(idx*20, 400)}ms` }} data-zebra={idx % 2 ? "odd" : "even"}>
+                  <TableCell>
+                    <div className="font-medium text-[#00317A]">{it.label || "Signer intake"}</div>
+                    {it.appointment_note && <div className="text-xs text-[#4B5563] mt-0.5">{it.appointment_note}</div>}
+                  </TableCell>
+                  <TableCell className="text-sm">{it.data?.signer_name || <span className="text-[#4B5563]">—</span>}</TableCell>
+                  <TableCell>
+                    <Badge variant="outline" className={`rounded-sm border font-normal ${style.cls}`}>{style.label}</Badge>
+                  </TableCell>
+                  <TableCell className="font-mono-plex text-xs text-[#4B5563]">{(it.created_at || "").slice(0,10)}</TableCell>
+                  <TableCell className="font-mono-plex text-xs text-[#4B5563]">{(it.expires_at || "").slice(0,10)}</TableCell>
+                  <TableCell className="text-right">
+                    <div className="flex justify-end gap-1">
+                      <Button size="sm" variant="ghost" onClick={() => setDetail(it)} data-testid={`share-intake-${it.id}`}>
+                        <Link2 className="w-4 h-4 mr-1" /> Share
+                      </Button>
+                      {it.status === "completed" && (
+                        <Button size="sm" onClick={() => openEntryFromIntake(it)}
+                          className="bg-[#DF0D1B] hover:bg-[#B00B16] text-white rounded-sm"
+                          data-testid={`use-intake-${it.id}`}>
+                          Use <ArrowRight className="w-3.5 h-3.5 ml-1" />
+                        </Button>
+                      )}
+                      <Button size="icon" variant="ghost" onClick={() => remove(it.id)} data-testid={`delete-intake-${it.id}`} className="hover:text-[#991B1B]">
+                        <Trash2 className="w-4 h-4" />
+                      </Button>
+                    </div>
+                  </TableCell>
+                </TableRow>
+              );
+            })}
+          </TableBody>
+        </Table>
+      </Card>
+
+      {/* Create dialog */}
+      <Dialog open={open} onOpenChange={setOpen}>
+        <DialogContent className="rounded-sm max-w-lg">
+          <DialogHeader>
+            <DialogTitle className="font-serif text-2xl text-[#00317A]">New Intake Link</DialogTitle>
+            <DialogDescription>
+              A public, Domini-branded page will be created. Share the link — no login required for the signer.
+            </DialogDescription>
+          </DialogHeader>
+          <form onSubmit={create} className="space-y-4">
+            <div>
+              <Label>Label (private, for you)</Label>
+              <Input value={form.label} onChange={(e) => setForm({...form, label: e.target.value})} className="mt-1 rounded-sm" placeholder="e.g., Smith closing – Thu 3pm" data-testid="intake-label" />
+            </div>
+            <div>
+              <Label>Appointment note (shown to signer)</Label>
+              <Textarea value={form.appointment_note} onChange={(e) => setForm({...form, appointment_note: e.target.value})} className="mt-1 rounded-sm" rows={2} placeholder="Optional — meeting time, place, or documents to bring." data-testid="intake-note" />
+            </div>
+            <div>
+              <Label>Link expires in</Label>
+              <select value={form.expires_hours} onChange={(e) => setForm({...form, expires_hours: parseInt(e.target.value)})}
+                className="mt-1 w-full h-10 rounded-sm border border-[#E2E8F0] px-3 bg-white text-sm"
+                data-testid="intake-expires">
+                <option value={24}>24 hours</option>
+                <option value={72}>3 days</option>
+                <option value={168}>7 days</option>
+                <option value={336}>14 days</option>
+                <option value={720}>30 days</option>
+              </select>
+            </div>
+            <DialogFooter>
+              <Button type="button" variant="ghost" onClick={() => setOpen(false)}>Cancel</Button>
+              <Button type="submit" className="rounded-sm bg-[#00317A] hover:bg-[#00265E] text-white" data-testid="save-intake-btn">
+                Create Link
+              </Button>
+            </DialogFooter>
+          </form>
+        </DialogContent>
+      </Dialog>
+
+      {/* Share detail dialog */}
+      <Dialog open={!!detail} onOpenChange={(o) => !o && setDetail(null)}>
+        <DialogContent className="rounded-sm max-w-lg">
+          {detail && (
+            <>
+              <DialogHeader>
+                <DialogTitle className="font-serif text-2xl text-[#00317A]">Share with Signer</DialogTitle>
+                <DialogDescription>{detail.label || "Signer intake"}</DialogDescription>
+              </DialogHeader>
+              <div className="space-y-4">
+                <div>
+                  <Label className="text-[10px] uppercase tracking-widest text-[#4B5563]">Public link</Label>
+                  <div className="mt-1 flex gap-2">
+                    <Input readOnly value={publicUrl(detail.token)} className="rounded-sm font-mono-plex text-xs" data-testid="intake-share-url" />
+                    <Button type="button" onClick={() => copyLink(detail.token)} className="rounded-sm bg-[#00317A] hover:bg-[#00265E] text-white" data-testid="copy-link-btn">
+                      <Copy className="w-4 h-4 mr-1" /> Copy
+                    </Button>
+                  </div>
+                </div>
+                <div>
+                  <Label className="text-[10px] uppercase tracking-widest text-[#4B5563]">Text message draft</Label>
+                  <Textarea readOnly value={smsBody(detail)} rows={4} className="mt-1 rounded-sm text-sm" data-testid="intake-sms-body" />
+                  <div className="mt-2 flex gap-2">
+                    <Button type="button" variant="outline" onClick={() => copySMS(detail)}
+                      className="rounded-sm border-[#00317A] text-[#00317A] hover:bg-[#00317A] hover:text-white" data-testid="copy-sms-btn">
+                      <Copy className="w-4 h-4 mr-1" /> Copy Text
+                    </Button>
+                    <a href={`sms:?body=${encodeURIComponent(smsBody(detail))}`}
+                       className="inline-flex items-center px-3 py-2 rounded-sm bg-[#DF0D1B] text-white text-sm hover:bg-[#B00B16] transition-colors"
+                       data-testid="open-sms-btn">
+                      <MessageSquare className="w-4 h-4 mr-1" /> Open in Messages
+                    </a>
+                  </div>
+                </div>
+                {detail.status === "completed" && detail.data && (
+                  <div className="p-3 border border-[#B7E0C1] bg-[#F1FAF3] rounded-sm text-sm">
+                    <div className="font-medium text-[#146334] mb-1">Signer has completed the form.</div>
+                    <div className="text-[#4B5563] text-xs">
+                      {detail.data.signer_name} · {detail.data.id_type} · {detail.data.id_number}
+                    </div>
+                  </div>
+                )}
+              </div>
+            </>
+          )}
+        </DialogContent>
+      </Dialog>
+    </div>
+  );
+}

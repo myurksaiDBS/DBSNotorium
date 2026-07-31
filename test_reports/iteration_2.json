@@ -1,0 +1,99 @@
+{
+  "summary": "Tested the Signer Portal feature end-to-end through the public deployment. Core authenticated intake CRUD, unauthenticated public GET/submit, duplicate-submit rejection, Ready-to-Journal prefill, copy actions, public token states, dashboard, journal API CRUD, and PDF export work. Backend suite result: 7 passed / 7 failed; frontend critical flow works, with one mobile layout failure and a generic SMS sender defect.",
+  "backend_issues": {
+    "critical": [
+      {
+        "endpoint": "/api/public/intake/{token}",
+        "issue": "Completed/used public links return the full submitted data object, exposing signer address, phone, email, ID number and notes without authentication. The public status/success screen does not need this PII.",
+        "priority": "CRITICAL"
+      },
+      {
+        "endpoint": "DELETE /api/intakes/{id}; POST /api/intakes/{id}/mark-used",
+        "issue": "Malformed IDs such as 'not-an-object-id' return 500. Backend logs confirm uncaught bson.errors.InvalidId at ObjectId(intake_id).",
+        "priority": "HIGH"
+      },
+      {
+        "endpoint": "/api/auth/login",
+        "issue": "Brute-force lockout is intermittent behind ingress: it failed in 3 of 4 valid runs (sixth request remained 401), while one isolated retry returned 429. request.client.host alternates between ingress addresses and splits counters.",
+        "priority": "HIGH"
+      },
+      {
+        "endpoint": "CORS middleware / OPTIONS /api/auth/me",
+        "issue": "Preflight returns Access-Control-Allow-Origin: * and no Access-Control-Allow-Credentials: true. server.py ignores CORS_ORIGINS and hardcodes allow_origins=['*'], allow_credentials=False.",
+        "priority": "HIGH"
+      }
+    ],
+    "minor": [
+      {
+        "endpoint": "POST /api/public/intake/{token}",
+        "issue": "Empty signer_name, id_type and id_number are accepted with 200 and permanently complete the intake; required string fields have no min_length validation."
+      },
+      {
+        "endpoint": "POST /api/intakes/{id}/mark-used",
+        "issue": "A valid but nonexistent ObjectId returns 200 {'ok': true} instead of 404 because matched_count is ignored."
+      }
+    ]
+  },
+  "flaky_tests": [
+    {
+      "test": "TestAuthSecurity.test_bruteforce_lockout_after_five_failures",
+      "failure_rate": "75% (3 failures / 4 valid runs)",
+      "issue": "Outcome depends on which ingress client address reaches the backend; rate-limit state is split by proxy host."
+    }
+  ],
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [
+      {
+        "flow": "Create intake -> share SMS draft",
+        "issue": "SMS always says 'this is your notary' instead of the notary's name. Neither POST/GET /api/intakes returns notary_name, although Intakes.jsx expects item.notary_name.",
+        "affected_selectors": ["[data-testid='intake-sms-body']", "[data-testid='copy-sms-btn']"]
+      }
+    ],
+    "design_issues": [
+      {
+        "screen": "Authenticated /intakes at 390x844",
+        "issues": [
+          "Fixed 256px sidebar and ml-64 main content produce 703px document width in a 390px viewport.",
+          "Intakes content begins at x=296 and New Intake Link ends at x=663, making the primary action off-screen; no mobile navigation is provided."
+        ]
+      }
+    ]
+  },
+  "test_report_links": [
+    "/app/backend/tests/backend_test.py",
+    "/app/backend/tests/conftest.py",
+    "/app/test_reports/pytest/pytest_results.xml"
+  ],
+  "action_items": [
+    "Remove signer data from the unauthenticated public GET response; return only display/status fields.",
+    "Validate ObjectId before database calls and return controlled 400/404; check matched_count in mark-used.",
+    "Add Pydantic min_length validation for required signer fields.",
+    "Key rate limiting from a trusted forwarded client IP plus normalized email, or use an account/email-based limiter that works behind ingress.",
+    "Parse explicit CORS_ORIGINS and enable credentials instead of wildcard CORS.",
+    "Return/inject the current notary name for SMS draft generation.",
+    "Add responsive authenticated navigation/content behavior for mobile.",
+    "Retest all listed failures after fixes."
+  ],
+  "critical_code_review_comments": [
+    "public_submit_intake performs find_one followed by an unconditional update, so simultaneous submissions can both pass the status check; use one atomic find_one_and_update filtered by status='pending' and unexpired state.",
+    "Intakes.load and remove have no error handling, while clipboard writes are not awaited/caught and show success even if permission is denied.",
+    "server.py is 777 lines and should be split into focused auth, intake, journal, client and PDF route modules.",
+    "Several interactive controls still lack data-testid attributes, including dialog Cancel/close controls and Select options.",
+    "The requested /app/auth_testing.md playbook file is absent, so its implementation comparison could not be performed; direct requested auth checks were executed instead."
+  ],
+  "updated_files": [
+    "/app/backend/tests/conftest.py",
+    "/app/backend/tests/backend_test.py",
+    "/app/test_reports/iteration_2.json"
+  ],
+  "success_rate": {
+    "backend": "50% (7/14 pytest cases)",
+    "frontend": "85%"
+  },
+  "seed_data_creation": "Created and deleted temporary TEST_ intakes and a regression journal entry. UI intake was marked used then deleted. Test login-attempt records were removed; no persistent test intake/journal seed remains.",
+  "should_call_test_agent_after_fix": true,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Core happy path is proven through the public URL. Re-run backend_test.py after fixes, then repeat mobile /intakes at 390px and verify SMS uses Matthew Yurksaitis. Public pending seeded token remains sU3c4C39cti1XVFBAkodwlPo; completed token mU77L1JQpluEcT0dgfkBJ-xL currently demonstrates public PII exposure.",
+  "rca_of_the_issue": "Malformed IDs are passed directly to bson.ObjectId without validation; mark-used ignores update matched_count; required Pydantic strings lack constraints; public_get_intake explicitly returns doc.data; CORS is hardcoded to wildcard/no credentials; rate-limit identity uses the reverse proxy host, which varied across requests; authenticated layout uses a permanently fixed w-64 sidebar and ml-64 main area with no breakpoint behavior."
+}

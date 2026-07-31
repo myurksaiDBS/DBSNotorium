@@ -133,6 +133,23 @@ class DocTypeIn(BaseModel):
     name: str
     description: Optional[str] = ""
 
+# Signer Intake (pre-fill link)
+class IntakeCreateIn(BaseModel):
+    label: Optional[str] = ""          # e.g., "Smith closing – Thu 3pm"
+    appointment_note: Optional[str] = ""
+    expires_hours: int = 168           # 7 days default
+
+class IntakeSubmitIn(BaseModel):
+    signer_name: str
+    signer_address: Optional[str] = ""
+    signer_phone: Optional[str] = ""
+    signer_email: Optional[str] = ""
+    id_type: str
+    id_number: str
+    id_expiration: Optional[str] = ""
+    id_issued_by: Optional[str] = ""
+    notes: Optional[str] = ""
+
 # -------- Auth Dependency --------
 async def get_current_user(request: Request) -> dict:
     token = request.cookies.get("access_token")
@@ -491,6 +508,98 @@ async def delete_doc_type(type_id: str, user=Depends(get_current_user)):
         raise HTTPException(status_code=404, detail="Type not found")
     return {"ok": True}
 
+# ---- Signer Intakes (pre-fill portal) ----
+import secrets as _secrets
+
+def _serialize_intake(doc: dict) -> dict:
+    d = dict(doc)
+    d["id"] = str(d.pop("_id"))
+    d.pop("user_id", None)
+    return d
+
+@api.get("/intakes")
+async def list_intakes(user=Depends(get_current_user)):
+    docs = await db.signer_intakes.find({"user_id": user["_id"]}).sort("created_at", -1).to_list(500)
+    now = datetime.now(timezone.utc).isoformat()
+    for d in docs:
+        if d.get("status") == "pending" and d.get("expires_at") and d["expires_at"] < now:
+            d["status"] = "expired"
+    return [_serialize_intake(d) for d in docs]
+
+@api.post("/intakes")
+async def create_intake(payload: IntakeCreateIn, user=Depends(get_current_user)):
+    token = _secrets.token_urlsafe(18)
+    now = datetime.now(timezone.utc)
+    expires = now + timedelta(hours=max(1, min(payload.expires_hours, 24 * 30)))
+    doc = {
+        "user_id": user["_id"],
+        "token": token,
+        "label": payload.label or "",
+        "appointment_note": payload.appointment_note or "",
+        "status": "pending",   # pending | completed | used | expired
+        "data": None,
+        "created_at": now.isoformat(),
+        "expires_at": expires.isoformat(),
+        "submitted_at": None,
+    }
+    result = await db.signer_intakes.insert_one(doc)
+    doc["_id"] = result.inserted_id
+    return _serialize_intake(doc)
+
+@api.delete("/intakes/{intake_id}")
+async def delete_intake(intake_id: str, user=Depends(get_current_user)):
+    result = await db.signer_intakes.delete_one({"_id": ObjectId(intake_id), "user_id": user["_id"]})
+    if result.deleted_count == 0:
+        raise HTTPException(status_code=404, detail="Intake not found")
+    return {"ok": True}
+
+@api.post("/intakes/{intake_id}/mark-used")
+async def mark_intake_used(intake_id: str, user=Depends(get_current_user)):
+    await db.signer_intakes.update_one(
+        {"_id": ObjectId(intake_id), "user_id": user["_id"]},
+        {"$set": {"status": "used", "used_at": datetime.now(timezone.utc).isoformat()}})
+    return {"ok": True}
+
+# --- Public routes (no auth) ---
+@api.get("/public/intake/{token}")
+async def public_get_intake(token: str):
+    doc = await db.signer_intakes.find_one({"token": token})
+    if not doc:
+        raise HTTPException(status_code=404, detail="Link not found")
+    now = datetime.now(timezone.utc).isoformat()
+    if doc.get("expires_at") and doc["expires_at"] < now and doc.get("status") == "pending":
+        return {"status": "expired"}
+    notary = await db.users.find_one({"_id": ObjectId(doc["user_id"])})
+    return {
+        "status": doc.get("status", "pending"),
+        "label": doc.get("label", ""),
+        "appointment_note": doc.get("appointment_note", ""),
+        "notary_name": notary.get("name") if notary else "",
+        "commission_number": notary.get("commission_number") if notary else "",
+        "state": notary.get("state") if notary else "",
+        "submitted_at": doc.get("submitted_at"),
+        "data": doc.get("data"),
+    }
+
+@api.post("/public/intake/{token}")
+async def public_submit_intake(token: str, payload: IntakeSubmitIn):
+    doc = await db.signer_intakes.find_one({"token": token})
+    if not doc:
+        raise HTTPException(status_code=404, detail="Link not found")
+    now = datetime.now(timezone.utc)
+    if doc.get("status") in ("completed", "used"):
+        raise HTTPException(status_code=400, detail="This intake has already been submitted.")
+    if doc.get("expires_at") and doc["expires_at"] < now.isoformat():
+        raise HTTPException(status_code=400, detail="This link has expired. Ask your notary for a new one.")
+    await db.signer_intakes.update_one(
+        {"_id": doc["_id"]},
+        {"$set": {
+            "data": payload.model_dump(),
+            "status": "completed",
+            "submitted_at": now.isoformat(),
+        }})
+    return {"ok": True}
+
 # ---- PDF Export ----
 @api.get("/entries/export/pdf")
 async def export_pdf(
@@ -617,6 +726,8 @@ async def startup():
     await db.entries.create_index([("user_id", 1), ("entry_date", -1)])
     await db.clients.create_index([("user_id", 1), ("name", 1)])
     await db.document_types.create_index([("user_id", 1), ("name", 1)])
+    await db.signer_intakes.create_index("token", unique=True)
+    await db.signer_intakes.create_index([("user_id", 1), ("created_at", -1)])
     await db.login_attempts.create_index("identifier")
 
     admin_email = os.environ.get("ADMIN_EMAIL", "admin@example.com").lower()
