@@ -509,7 +509,7 @@ async def export_pdf(
                             topMargin=0.4*inch, bottomMargin=0.4*inch)
     styles = getSampleStyleSheet()
     title_style = ParagraphStyle('t', parent=styles['Title'], fontSize=18,
-                                 alignment=TA_CENTER, textColor=colors.HexColor("#0A192F"))
+                                 alignment=TA_CENTER, textColor=colors.HexColor("#00317A"))
     header_style = ParagraphStyle('h', parent=styles['Normal'], fontSize=9,
                                   textColor=colors.HexColor("#4B5563"), alignment=TA_CENTER)
     elems = []
@@ -546,7 +546,7 @@ async def export_pdf(
 
     table = Table(data, colWidths=[0.4*inch, 0.9*inch, 1.4*inch, 1.7*inch, 2.6*inch, 1.8*inch, 0.8*inch])
     table.setStyle(TableStyle([
-        ('BACKGROUND', (0,0), (-1,0), colors.HexColor("#0A192F")),
+        ('BACKGROUND', (0,0), (-1,0), colors.HexColor("#00317A")),
         ('TEXTCOLOR', (0,0), (-1,0), colors.white),
         ('FONTNAME', (0,0), (-1,0), 'Helvetica-Bold'),
         ('FONTSIZE', (0,0), (-1,-1), 8),

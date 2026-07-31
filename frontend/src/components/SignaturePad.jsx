@@ -22,7 +22,7 @@ const SignaturePad = forwardRef(({ initialData = "", height = 180 }, ref) => {
     ctx.lineWidth = 2;
     ctx.lineCap = "round";
     ctx.lineJoin = "round";
-    ctx.strokeStyle = "#0A192F";
+    ctx.strokeStyle = "#00317A";
   };
 
   useEffect(() => {

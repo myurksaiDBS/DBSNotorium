@@ -161,19 +161,19 @@ export default function Journal() {
     <div className="space-y-6" data-testid="journal-page">
       <div className="flex items-end justify-between border-b border-[#E2E8F0] pb-6">
         <div>
-          <div className="text-[11px] uppercase tracking-[0.25em] text-[#B49A5A] mb-2">Records</div>
-          <h1 className="font-serif text-4xl text-[#0A192F]">Journal Entries</h1>
+          <div className="text-[11px] uppercase tracking-[0.25em] text-[#DF0D1B] mb-2">Records</div>
+          <h1 className="font-serif text-4xl text-[#00317A]">Journal Entries</h1>
           <p className="text-sm text-[#4B5563] mt-1">
             {entries.length} entries · ${totalFees.toFixed(2)} in fees
           </p>
         </div>
         <div className="flex gap-2">
           <Button variant="outline" onClick={exportPDF} data-testid="export-pdf-btn"
-            className="rounded-sm border-[#0A192F] text-[#0A192F] hover:bg-[#0A192F] hover:text-white">
+            className="rounded-sm border-[#00317A] text-[#00317A] hover:bg-[#00317A] hover:text-white">
             <FileDown className="w-4 h-4 mr-2" /> Export PDF
           </Button>
           <Button onClick={openCreate} data-testid="new-entry-btn"
-            className="rounded-sm bg-[#0A192F] hover:bg-[#12253F] text-white">
+            className="rounded-sm bg-[#00317A] hover:bg-[#00265E] text-white">
             <Plus className="w-4 h-4 mr-2" /> New Entry
           </Button>
         </div>
@@ -221,7 +221,7 @@ export default function Journal() {
               <TableRow key={e.id} className="row-anim" style={{ animationDelay: `${Math.min(idx*20, 400)}ms` }} data-zebra={idx % 2 ? "odd" : "even"}>
                 <TableCell className="font-mono-plex text-xs text-[#4B5563]">{entries.length - idx}</TableCell>
                 <TableCell className="font-mono-plex text-xs">{(e.entry_date || "").slice(0,10)}</TableCell>
-                <TableCell><Badge variant="secondary" className="rounded-sm bg-[#F4F7F9] text-[#0A192F] border border-[#E2E8F0] font-normal">{e.notarization_type}</Badge></TableCell>
+                <TableCell><Badge variant="secondary" className="rounded-sm bg-[#F4F7F9] text-[#00317A] border border-[#E2E8F0] font-normal">{e.notarization_type}</Badge></TableCell>
                 <TableCell className="font-medium">{e.signer_name}</TableCell>
                 <TableCell className="text-sm text-[#4B5563]">{e.document_type}{e.document_description ? ` — ${e.document_description}` : ""}</TableCell>
                 <TableCell className="text-xs font-mono-plex text-[#4B5563]">{e.id_type} · {e.id_number}</TableCell>
@@ -243,14 +243,14 @@ export default function Journal() {
       <Dialog open={open} onOpenChange={setOpen}>
         <DialogContent className="max-w-3xl max-h-[90vh] overflow-y-auto rounded-sm">
           <DialogHeader>
-            <DialogTitle className="font-serif text-2xl text-[#0A192F]">
+            <DialogTitle className="font-serif text-2xl text-[#00317A]">
               {editingId ? "Edit Journal Entry" : "New Journal Entry"}
             </DialogTitle>
             <DialogDescription>Record the notarial act. All fields marked with * are required.</DialogDescription>
           </DialogHeader>
           <form onSubmit={save} className="space-y-6">
             <div>
-              <div className="text-[10px] uppercase tracking-widest text-[#B49A5A] mb-3">Notarial Act</div>
+              <div className="text-[10px] uppercase tracking-widest text-[#DF0D1B] mb-3">Notarial Act</div>
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                 <div>
                   <Label>Date &amp; Time *</Label>
@@ -289,7 +289,7 @@ export default function Journal() {
             </div>
 
             <div>
-              <div className="text-[10px] uppercase tracking-widest text-[#B49A5A] mb-3">Signer Information</div>
+              <div className="text-[10px] uppercase tracking-widest text-[#DF0D1B] mb-3">Signer Information</div>
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                 <div>
                   <Label>Full Name *</Label>
@@ -325,7 +325,7 @@ export default function Journal() {
             </div>
 
             <div>
-              <div className="text-[10px] uppercase tracking-widest text-[#B49A5A] mb-3">Identification</div>
+              <div className="text-[10px] uppercase tracking-widest text-[#DF0D1B] mb-3">Identification</div>
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                 <div>
                   <Label>ID Type *</Label>
@@ -356,7 +356,7 @@ export default function Journal() {
             </div>
 
             <div>
-              <div className="text-[10px] uppercase tracking-widest text-[#B49A5A] mb-3">Signer's Signature</div>
+              <div className="text-[10px] uppercase tracking-widest text-[#DF0D1B] mb-3">Signer's Signature</div>
               <SignaturePad ref={sigRef} initialData={form.signature_data} />
             </div>
 
@@ -371,7 +371,7 @@ export default function Journal() {
             <DialogFooter>
               <Button type="button" variant="ghost" onClick={() => setOpen(false)}>Cancel</Button>
               <Button type="submit" data-testid="save-entry-btn"
-                className="rounded-sm bg-[#0A192F] hover:bg-[#12253F] text-white">
+                className="rounded-sm bg-[#00317A] hover:bg-[#00265E] text-white">
                 {editingId ? "Save Changes" : "Record Entry"}
               </Button>
             </DialogFooter>
@@ -385,7 +385,7 @@ export default function Journal() {
           {viewing && (
             <>
               <DialogHeader>
-                <DialogTitle className="font-serif text-2xl text-[#0A192F]">Journal Entry Detail</DialogTitle>
+                <DialogTitle className="font-serif text-2xl text-[#00317A]">Journal Entry Detail</DialogTitle>
                 <DialogDescription className="font-mono-plex">{viewing.entry_date}</DialogDescription>
               </DialogHeader>
               <div className="grid grid-cols-2 gap-4 text-sm">

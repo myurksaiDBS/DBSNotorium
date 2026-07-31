@@ -50,12 +50,12 @@ export default function Clients() {
     <div className="space-y-6" data-testid="clients-page">
       <div className="flex items-end justify-between border-b border-[#E2E8F0] pb-6">
         <div>
-          <div className="text-[11px] uppercase tracking-[0.25em] text-[#B49A5A] mb-2">Contacts</div>
-          <h1 className="font-serif text-4xl text-[#0A192F]">Signers</h1>
+          <div className="text-[11px] uppercase tracking-[0.25em] text-[#DF0D1B] mb-2">Contacts</div>
+          <h1 className="font-serif text-4xl text-[#00317A]">Signers</h1>
           <p className="text-sm text-[#4B5563] mt-1">{clients.length} people on record</p>
         </div>
         <Button onClick={() => { setEditingId(null); setForm(empty); setOpen(true); }}
-          className="rounded-sm bg-[#0A192F] hover:bg-[#12253F] text-white"
+          className="rounded-sm bg-[#00317A] hover:bg-[#00265E] text-white"
           data-testid="new-client-btn">
           <Plus className="w-4 h-4 mr-2" /> Add Signer
         </Button>
@@ -120,7 +120,7 @@ export default function Clients() {
             <div><Label>ID Number</Label><Input value={form.id_number} onChange={(e) => setForm({...form, id_number: e.target.value})} className="mt-1 rounded-sm font-mono-plex" /></div>
             <div className="md:col-span-2 flex justify-end gap-2 pt-2">
               <Button type="button" variant="ghost" onClick={() => setOpen(false)}>Cancel</Button>
-              <Button type="submit" className="rounded-sm bg-[#0A192F] hover:bg-[#12253F] text-white" data-testid="save-client-btn">Save</Button>
+              <Button type="submit" className="rounded-sm bg-[#00317A] hover:bg-[#00265E] text-white" data-testid="save-client-btn">Save</Button>
             </div>
           </form>
         </DialogContent>

@@ -1,23 +1,20 @@
 import { useState } from "react";
 import { useAuth } from "@/context/AuthContext";
-import { useNavigate, Link } from "react-router-dom";
+import { useNavigate } from "react-router-dom";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Card } from "@/components/ui/card";
-import { ScrollText } from "lucide-react";
 import { toast } from "sonner";
 
 export default function Login() {
-  const { login } = useAuth();
+  const { login, register } = useAuth();
   const nav = useNavigate();
-  const [mode, setMode] = useState("login"); // login | register
+  const [mode, setMode] = useState("login");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [name, setName] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
-  const { register } = useAuth();
 
   const submit = async (e) => {
     e.preventDefault();
@@ -35,36 +32,41 @@ export default function Login() {
   return (
     <div className="min-h-screen grid lg:grid-cols-5 bg-white">
       {/* Left panel */}
-      <div className="hidden lg:flex lg:col-span-2 relative overflow-hidden bg-[#0A192F] text-white">
+      <div className="hidden lg:flex lg:col-span-2 relative overflow-hidden bg-[#00317A] text-white">
         <div
-          className="absolute inset-0 opacity-30"
+          className="absolute inset-0 opacity-25"
           style={{
             backgroundImage: `url('https://images.unsplash.com/photo-1631557776808-91908aba7ca0?crop=entropy&cs=srgb&fm=jpg&q=85&w=1200')`,
             backgroundSize: "cover", backgroundPosition: "center",
           }}
         />
-        <div className="absolute inset-0 bg-gradient-to-t from-[#0A192F] via-[#0A192F]/70 to-transparent" />
+        <div className="absolute inset-0 bg-[#00317A]/70" />
         <div className="relative z-10 p-12 flex flex-col justify-between w-full">
-          <div className="flex items-center gap-3">
-            <div className="w-10 h-10 rounded-sm bg-[#B49A5A] flex items-center justify-center">
-              <ScrollText className="w-5 h-5 text-[#0A192F]" />
+          <div className="flex items-center gap-4">
+            <div className="w-14 h-14 rounded-sm bg-white p-1.5 shadow-lg">
+              <img src="/domini-logo.png" alt="Domini Business Services" className="w-full h-full object-contain" />
             </div>
             <div>
-              <div className="font-serif text-xl leading-tight">Notarium</div>
-              <div className="text-[10px] uppercase tracking-[0.25em] text-white/60">Journal &amp; Log</div>
+              <div className="font-serif text-2xl leading-tight">Notarium</div>
+              <div className="text-[10px] uppercase tracking-[0.25em] text-white/70">Domini Business Services</div>
             </div>
           </div>
           <div>
+            <div className="h-1 w-16 bg-[#DF0D1B] mb-6" />
             <h2 className="font-serif text-4xl leading-tight mb-4">
               The record of trust,<br/>bound to your seal.
             </h2>
-            <p className="text-white/70 text-sm max-w-md">
-              A modern journal for the modern notary — signer records, document logs,
-              digital signatures, and audit-ready PDF exports in one place.
+            <p className="text-white/75 text-sm max-w-md leading-relaxed">
+              The professional notary journal by Domini Business Services.
+              Signer records, document logs, digital signatures, and audit-ready
+              PDF exports — all in one authoritative place.
             </p>
-            <div className="mt-8 border-l-2 border-[#B49A5A] pl-4 text-xs text-white/60 font-mono-plex">
-              COMMISSION · SIGNER · DOCUMENT · SIGNATURE
+            <div className="mt-8 border-l-2 border-[#D4AF37] pl-4 text-[10px] text-white/60 font-mono-plex uppercase tracking-widest">
+              Commission · Signer · Document · Signature
             </div>
+          </div>
+          <div className="text-[10px] uppercase tracking-[0.25em] text-white/40 font-mono-plex">
+            A Division of YFI Enterprises, LLC
           </div>
         </div>
       </div>
@@ -72,7 +74,19 @@ export default function Login() {
       {/* Right panel */}
       <div className="lg:col-span-3 flex items-center justify-center px-6 py-16">
         <div className="w-full max-w-md">
-          <h1 className="font-serif text-4xl mb-2">
+          {/* Mobile logo */}
+          <div className="lg:hidden mb-8 flex items-center gap-3">
+            <div className="w-12 h-12 rounded-sm bg-white border border-[#E2E8F0] p-1">
+              <img src="/domini-logo.png" alt="Domini" className="w-full h-full object-contain" />
+            </div>
+            <div>
+              <div className="font-serif text-lg text-[#00317A]">Notarium</div>
+              <div className="text-[9px] uppercase tracking-[0.25em] text-[#4B5563]">Domini Business Services</div>
+            </div>
+          </div>
+
+          <div className="h-1 w-12 bg-[#DF0D1B] mb-5" />
+          <h1 className="font-serif text-4xl mb-2 text-[#00317A]">
             {mode === "login" ? "Sign in to your journal" : "Create your notary account"}
           </h1>
           <p className="text-sm text-[#4B5563] mb-8">
@@ -107,7 +121,7 @@ export default function Login() {
 
             <Button type="submit" disabled={loading}
               data-testid="auth-submit-btn"
-              className="w-full h-11 bg-[#0A192F] hover:bg-[#12253F] rounded-sm text-white transition-colors">
+              className="w-full h-11 bg-[#00317A] hover:bg-[#00265E] rounded-sm text-white transition-colors">
               {loading ? "Please wait..." : mode === "login" ? "Sign In" : "Create Account"}
             </Button>
           </form>
@@ -115,11 +129,11 @@ export default function Login() {
           <div className="mt-6 text-sm text-[#4B5563]">
             {mode === "login" ? (
               <>New here?{" "}
-                <button type="button" data-testid="toggle-register" className="text-[#0A192F] font-medium underline underline-offset-2 hover:text-[#B49A5A]" onClick={() => setMode("register")}>Create an account</button>
+                <button type="button" data-testid="toggle-register" className="text-[#DF0D1B] font-medium underline underline-offset-2 hover:text-[#00317A]" onClick={() => setMode("register")}>Create an account</button>
               </>
             ) : (
               <>Already registered?{" "}
-                <button type="button" data-testid="toggle-login" className="text-[#0A192F] font-medium underline underline-offset-2 hover:text-[#B49A5A]" onClick={() => setMode("login")}>Sign in</button>
+                <button type="button" data-testid="toggle-login" className="text-[#DF0D1B] font-medium underline underline-offset-2 hover:text-[#00317A]" onClick={() => setMode("login")}>Sign in</button>
               </>
             )}
           </div>

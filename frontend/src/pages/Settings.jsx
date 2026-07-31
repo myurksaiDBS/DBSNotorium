@@ -28,8 +28,8 @@ export default function Settings() {
   return (
     <div className="space-y-6" data-testid="settings-page">
       <div className="border-b border-[#E2E8F0] pb-6">
-        <div className="text-[11px] uppercase tracking-[0.25em] text-[#B49A5A] mb-2">Profile</div>
-        <h1 className="font-serif text-4xl text-[#0A192F]">Commission Details</h1>
+        <div className="text-[11px] uppercase tracking-[0.25em] text-[#DF0D1B] mb-2">Profile</div>
+        <h1 className="font-serif text-4xl text-[#00317A]">Commission Details</h1>
         <p className="text-sm text-[#4B5563] mt-1">Displayed on your exported journals.</p>
       </div>
 
@@ -53,15 +53,15 @@ export default function Settings() {
             <Label>Commission Expiration</Label>
             <Input type="date" value={form.commission_expires || ""} onChange={(e) => setForm({...form, commission_expires: e.target.value})} className="mt-1 rounded-sm font-mono-plex max-w-xs" data-testid="settings-comm-exp" />
           </div>
-          <Button type="submit" disabled={saving} className="rounded-sm bg-[#0A192F] hover:bg-[#12253F] text-white" data-testid="save-settings-btn">
+          <Button type="submit" disabled={saving} className="rounded-sm bg-[#00317A] hover:bg-[#00265E] text-white" data-testid="save-settings-btn">
             {saving ? "Saving..." : "Save Details"}
           </Button>
         </form>
       </Card>
 
-      <Card className="p-6 max-w-2xl border-[#B49A5A]/30 rounded-sm shadow-none bg-[#FBF7EF]">
-        <div className="text-[10px] uppercase tracking-widest text-[#8B6F35] mb-2">Signed in as</div>
-        <div className="text-[#0A192F] font-medium">{user?.email}</div>
+      <Card className="p-6 max-w-2xl border-[#DF0D1B]/30 rounded-sm shadow-none bg-[#FEF2F2]">
+        <div className="text-[10px] uppercase tracking-widest text-[#991B1B] mb-2">Signed in as</div>
+        <div className="text-[#00317A] font-medium">{user?.email}</div>
       </Card>
     </div>
   );

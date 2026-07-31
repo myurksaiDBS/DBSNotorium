@@ -1,7 +1,7 @@
-import { Link, NavLink, Outlet, useNavigate } from "react-router-dom";
+import { NavLink, Outlet, useNavigate } from "react-router-dom";
 import { useAuth } from "@/context/AuthContext";
 import {
-  LayoutDashboard, BookOpen, Users, FileType2, Settings, LogOut, ScrollText,
+  LayoutDashboard, BookOpen, Users, FileType2, Settings, LogOut,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 
@@ -20,15 +20,15 @@ export default function Layout() {
   return (
     <div className="min-h-screen flex bg-[#F4F7F9]">
       {/* Sidebar */}
-      <aside className="w-64 bg-[#0A192F] text-white flex flex-col fixed inset-y-0 left-0">
-        <div className="px-6 pt-8 pb-6 border-b border-white/10">
+      <aside className="w-64 bg-[#00317A] text-white flex flex-col fixed inset-y-0 left-0">
+        <div className="px-6 pt-6 pb-5 border-b border-white/10">
           <div className="flex items-center gap-3">
-            <div className="w-9 h-9 rounded-sm bg-[#B49A5A] flex items-center justify-center">
-              <ScrollText className="w-5 h-5 text-[#0A192F]" />
+            <div className="w-11 h-11 rounded-sm bg-white flex items-center justify-center p-1 shadow-sm">
+              <img src="/domini-logo.png" alt="Domini" className="w-full h-full object-contain" />
             </div>
             <div>
               <div className="font-serif text-lg leading-tight">Notarium</div>
-              <div className="text-[10px] uppercase tracking-[0.2em] text-white/60">Journal &amp; Log</div>
+              <div className="text-[10px] uppercase tracking-[0.2em] text-white/60">Domini · Journal</div>
             </div>
           </div>
         </div>
@@ -42,7 +42,7 @@ export default function Layout() {
               className={({ isActive }) =>
                 `flex items-center gap-3 px-3 py-2.5 rounded-sm text-sm transition-colors duration-200 ${
                   isActive
-                    ? "bg-white/10 text-white border-l-2 border-[#B49A5A] pl-[10px]"
+                    ? "bg-white/10 text-white border-l-2 border-[#DF0D1B] pl-[10px]"
                     : "text-white/70 hover:bg-white/5 hover:text-white"
                 }`
               }
@@ -67,9 +67,11 @@ export default function Layout() {
             <LogOut className="w-4 h-4 mr-2" /> Sign Out
           </Button>
         </div>
+        <div className="px-6 py-3 text-[9px] uppercase tracking-[0.25em] text-white/40 border-t border-white/10 text-center font-mono-plex">
+          A Division of YFI Enterprises
+        </div>
       </aside>
 
-      {/* Content */}
       <main className="flex-1 ml-64">
         <div className="max-w-[1400px] mx-auto px-10 py-10">
           <Outlet />
