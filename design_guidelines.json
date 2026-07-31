@@ -1,0 +1,134 @@
+{
+  "theme": "Light mode primary (Professional Legal/Paper-like clarity)",
+  "typography": {
+    "headings": {
+      "fontFamily": "Playfair Display, serif",
+      "weights": ["400", "600", "700"],
+      "usage": "Use for H1, H2, H3 and high-level dashboard metrics to evoke legal authority and 'Old Money Tech' aesthetic.",
+      "letterSpacing": "tracking-tight"
+    },
+    "body": {
+      "fontFamily": "IBM Plex Sans, sans-serif",
+      "weights": ["400", "500", "600"],
+      "usage": "Use for all body text, tables, form inputs, and labels. Provides a sterile, precise, highly legible contrast to the serif headings."
+    },
+    "mono": {
+      "fontFamily": "IBM Plex Mono, monospace",
+      "weights": ["400"],
+      "usage": "Use for IDs, document numbers, timestamps, and fee amounts to ensure vertical alignment of digits."
+    }
+  },
+  "colors": {
+    "primary": {
+      "DEFAULT": "#0A192F",
+      "description": "Deep Legal Navy - use for sidebar backgrounds, primary buttons, and active states. Represents trust and authority."
+    },
+    "background": {
+      "DEFAULT": "#FFFFFF",
+      "subtle": "#F4F7F9",
+      "description": "Crisp white for main content areas to mimic physical paper. Subtle blue-tinted grey for page backgrounds."
+    },
+    "text": {
+      "main": "#111827",
+      "muted": "#4B5563",
+      "inverse": "#FFFFFF"
+    },
+    "accent": {
+      "gold": "#B49A5A",
+      "description": "Subtle muted gold for special badges, premium indicators, or highlight borders."
+    },
+    "status": {
+      "success": "#166534",
+      "warning": "#9A3412",
+      "error": "#991B1B"
+    },
+    "border": {
+      "DEFAULT": "#E2E8F0"
+    }
+  },
+  "visual_enhancers": {
+    "shadows": {
+      "card": "shadow-sm",
+      "hover": "shadow-md",
+      "dialog": "shadow-[0_8px_32px_rgba(10,25,47,0.12)]"
+    },
+    "borders": {
+      "radius": "rounded-sm",
+      "width": "border",
+      "description": "Keep border radii minimal (2px-4px) to maintain a rigid, authoritative structure rather than playful curves. Use 1px solid borders for definition."
+    },
+    "surfaces": {
+      "cards": "Flat solid background with 1px border. No heavy drop shadows by default.",
+      "signature_pad": "bg-[#FDFDFD] border-2 border-dashed border-slate-300 rounded-sm relative. Add a subtle 'X _____' line at the bottom."
+    }
+  },
+  "layouts": {
+    "general": "Sidebar navigation + Main content area. The sidebar should be Deep Navy (#0A192F) with white text. Top header is crisp white with a 1px bottom border.",
+    "dashboard": "Bento Grid Protocol (Mode B: High Density). Strict grid hierarchy, dense spacing.",
+    "forms": "2-column grid for journal entries. Group fields logically: Signer Information, Document Details, Notarization Type, Fees.",
+    "tables": "Dense rows, left-aligned data, right-aligned monetary values. Zebra striping or subtle border-bottom for rows."
+  },
+  "grids": {
+    "dashboard_metrics": "grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6",
+    "dashboard_charts": "col-span-1 lg:col-span-3 for main chart, col-span-1 for recent activity feed",
+    "form_layout": "grid grid-cols-1 md:grid-cols-2 gap-6"
+  },
+  "motion": {
+    "transitions": "Fast and precise. transition-colors duration-200 ease-in-out.",
+    "hover_states": "Buttons subtly lift (-translate-y-[1px]) and gain a slightly darker hue or increased shadow.",
+    "lists": "Staggered fade-in for journal entry lists."
+  },
+  "accessibility": {
+    "contrast": "Ensure all text against the navy background is pure white or very light gray. Use muted colors carefully to maintain 4.5:1 ratio.",
+    "focus": "focus:ring-2 focus:ring-primary/50 focus:outline-none focus:border-primary",
+    "test_ids": "Add data-testid attributes to all interactive elements (e.g., data-testid='login-button', data-testid='signature-canvas')."
+  },
+  "media": {
+    "style": "Professional, clean, legal-focused imagery.",
+    "signature": "The signature pad must be an HTML Canvas element, configured to handle touch and mouse events smoothly, outputting a base64 image string."
+  },
+  "image_urls": {
+    "avatar_placeholder": {
+      "url": "https://images.unsplash.com/photo-1573496359142-b8d87734a5a2?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NjA1MDV8MHwxfHNlYXJjaHwxfHxwcm9mZXNzaW9uYWwlMjBidXNpbmVzcyUyMHdvbWFuJTIwcG9ydHJhaXR8ZW58MHx8fHwxNzg1NTE5MDkyfDA&ixlib=rb-4.1.0&q=85",
+      "description": "Professional avatar for the notary public profile/settings."
+    },
+    "auth_background": {
+      "url": "https://images.unsplash.com/photo-1631557776808-91908aba7ca0?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NjA1NzB8MHwxfHNlYXJjaHwxfHxsYXclMjBsZWdhbCUyMGRvY3VtZW50JTIwcGVufGVufDB8fHx8MTc4NTUxOTA5Mnww&ixlib=rb-4.1.0&q=85",
+      "description": "Legal document with a pen, used as the background or side panel image for the Login/Register screen."
+    }
+  },
+  "components_to_use": [
+    "Shadcn Table (Journal entries, clients)",
+    "Shadcn Form & React Hook Form (Create/Edit journal)",
+    "Shadcn Dialog (Modals for quick viewing entries)",
+    "Shadcn Select (Document types, Notarization types)",
+    "Recharts (Revenue and monthly stats)",
+    "React Signature Canvas (or custom HTML5 canvas for digital signature)",
+    "Sonner (Toast notifications)"
+  ],
+  "instructions_to_main_agent": [
+    "Implement JWT Auth flow with a dedicated Login/Register page.",
+    "Build a robust Dashboard: Use Recharts for monthly revenue and stats. Layout using High Density Bento grid.",
+    "Journal Entries system: Needs list view with search/filter, and a comprehensive Create/Edit form.",
+    "Form fields must include: Date/Time, Notarization Type (Acknowledgment, Jurat, etc.), Signer Name, Address, ID Type/Number, Document Description, Fee, and Digital Signature.",
+    "Implement a Canvas-based Signature Pad component that captures the signature and saves it (e.g., as base64).",
+    "Clients/Signers database: A separate page listing past signers, searchable.",
+    "Document Types management: A simple settings area to add/remove common document types.",
+    "PDF Export: Implement functionality (e.g., using jspdf or standard print styling) to export journal logs.",
+    "Use Playfair Display for headings and IBM Plex Sans for body. Do NOT use Inter for headings.",
+    "Theme: primarily Light Mode, using Deep Navy (#0A192F) as the brand/primary color. Avoid heavy gradients.",
+    "Add 'data-testid' to all interactive elements for testing."
+  ],
+  "UNIVERSAL GUIDELINES FOR MAIN AGENT": [
+    "You tend to converge toward generic outputs. Avoid this: make creative, distinctive frontends that surprise and delight.",
+    "Dark colors look good when used independently without gradients. DO NOT use dark colors as gradients.",
+    "Don't make generic centered layouts. Create depth through layered design elements.",
+    "You MUST NOT apply universal transition (e.g., transition: all). Add transitions for specific interactive elements.",
+    "You MUST NOT center align the app container (.App { text-align: center; }).",
+    "Always use modern button styles, here specifically sharp or slightly rounded corners suitable for legal software.",
+    "NEVER use AI assistant Emoji characters like \ud83e\udd16\ud83e\udde0\ud83d\udcad\ud83d\udca1\ud83d\udd2e\ud83c\udfaf for icons.",
+    "Every interaction needs micro-animations - hover states, transitions. Static = dead.",
+    "Use generous spacing. Cramped designs look cheap. Ensure tables have adequate cell padding.",
+    "Use `sonner` for toast notifications (located in /app/src/components/ui/sonner.tsx)."
+  ]
+}
