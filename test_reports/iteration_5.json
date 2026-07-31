@@ -1,0 +1,51 @@
+{
+  "summary": "Feature-scoped Commission Alerts retest completed. All four backend fixes passed: the exact 13-case bucket matrix, six-step sequential real-email progression with immediate dedup at every bucket, profile-renewal dedup reset/new-cycle alert, and concurrent webhook idempotency with one unique cron_runs record. Frontend rollback and all requested alert-status/upcoming test IDs pass after QA added the missing attributes. One low-priority cadence text-spacing defect remains, and cron duplicate handling still catches all insert exceptions rather than DuplicateKeyError only.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {
+        "endpoint": "POST /api/cron/commission-alerts",
+        "issue": "The insert-first idempotency block catches broad Exception instead of bson.errors.DuplicateKeyError. A non-duplicate database failure would be falsely acknowledged as duplicate and the alert scan would be silently dropped. Concurrent duplicate delivery itself passed.",
+        "priority": "MEDIUM"
+      }
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [
+      {
+        "component": "Settings Commission Alerts cadence description",
+        "issue": "DOM/accessibility text still renders as 'at60 · 30 · 14 · 7 · 1days'. CSS mx-1 creates visual separation but does not add actual whitespace between adjacent text nodes.",
+        "selector": "[data-testid='alerts-panel'] p",
+        "priority": "LOW"
+      }
+    ],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/backend_test.py",
+    "/app/test_reports/pytest/commission_alerts_iteration5.xml"
+  ],
+  "action_items": [
+    "Add literal JSX whitespace around the cadence span so textContent is exactly 'at 60 · 30 · 14 · 7 · 1 days'.",
+    "Catch DuplicateKeyError specifically in cron_commission_alerts; let other Mongo insert failures surface instead of returning duplicate=true."
+  ],
+  "critical_code_review_comments": [
+    "cron_commission_alerts currently conflates every cron_runs insert failure with an expected unique-key collision; only DuplicateKeyError proves a duplicate delivery.",
+    "The requested alerts-days-left, alerts-expires-on, alerts-upcoming-list, and alerts-upcoming-{days_out} attributes were absent from Settings.jsx at test start; QA added them under the permitted testability scope and verified them through the public UI."
+  ],
+  "updated_files": [
+    "/app/backend/tests/backend_test.py",
+    "/app/frontend/src/pages/Settings.jsx",
+    "/app/test_reports/iteration_5.json"
+  ],
+  "success_rate": {
+    "backend": "100% executed tests (4/4 passed; one static error-handling risk remains)",
+    "frontend": "89% scoped checks (8/9 passed; cadence DOM spacing failed)"
+  },
+  "seed_data_creation": "No permanent seed data created. Temporarily updated/restored the admin commission and alert-dedup fields, paused/restored other users during scans, and deleted TEST_COMMISSION_ cron-run records. Seven real emails were accepted: one renewal-cycle alert plus six sequential 60/30/14/7/0/-1 alerts. Immediate re-fires produced no new email IDs. Admin was restored to alerts enabled with commission_expires 2026-09-14 (today+45).",
+  "should_call_test_agent_after_fix": false,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "Run only Commission Alerts scope. iteration_5 backend pytest passed all 4 tests in 19.92s. Public UI showed 45 days left and upcoming 30/14/7/1/0 rows. Delayed mocked PUT /api/auth/profile proved the switch first became unchecked optimistically, then rolled back to checked with a visible error toast. Explicitly excluded mobile, CORS, brute-force, native date picker, recharts, and file-splitting findings were not retested or carried forward.",
+  "rca_of_the_issue": "Remaining frontend RCA: JSX line breaks between the text node ending in 'at', the cadence span, and the text node beginning 'days' do not create DOM spaces; mx-1 only affects layout. Remaining backend risk: an over-broad except Exception treats connectivity/write failures as duplicate-key collisions, acknowledges success, and skips enqueueing. Core bucket/dedup RCA from iteration_4 is fixed by ascending ALERT_BUCKETS, and renewal stale state is fixed by clearing all three dedup fields when commission_expires changes."
+}

@@ -297,6 +297,12 @@ async def refresh(request: Request, response: Response):
 @api.put("/auth/profile")
 async def update_profile(payload: ProfileIn, user=Depends(get_current_user)):
     updates = {k: v for k, v in payload.model_dump(exclude_unset=True).items() if v is not None}
+    # If the notary changes their commission expiration (e.g. after renewing),
+    # clear alert-dedup state so the new cycle can trigger notices again.
+    if "commission_expires" in updates and updates["commission_expires"] != user.get("commission_expires"):
+        updates["last_alert_bucket"] = None
+        updates["last_alert_sent_at"] = None
+        updates["last_alert_email_id"] = None
     if updates:
         await db.users.update_one({"_id": ObjectId(user["_id"])}, {"$set": updates})
     doc = await db.users.find_one({"_id": ObjectId(user["_id"])})
@@ -312,7 +318,9 @@ async def update_profile(payload: ProfileIn, user=Depends(get_current_user)):
 
 # ---- Commission Alerts (Resend email) ----
 EMAIL_BASE_URL = "https://integrations.emergentagent.com"
-ALERT_BUCKETS = [60, 30, 14, 7, 1, 0]  # days remaining thresholds
+# Ordered smallest → largest so we pick the tightest still-valid threshold.
+# e.g. at 5 days left we want the 7-day notice, not the 60-day notice.
+ALERT_BUCKETS = [0, 1, 7, 14, 30, 60]
 
 def _parse_commission_date(value: Optional[str]) -> Optional[date]:
     if not value:
@@ -467,16 +475,18 @@ async def cron_commission_alerts(
         provided = authorization[7:]
     if not expected or not hmac.compare_digest(expected, provided):
         raise HTTPException(status_code=401, detail="Unauthorized")
-    # Idempotency: skip re-processing same webhook run
+    # Idempotency: skip re-processing same webhook run. Insert-first with a
+    # unique index makes duplicate concurrent deliveries safe.
     if x_webhook_id:
-        existing = await db.cron_runs.find_one({"run_id": x_webhook_id})
-        if existing:
+        try:
+            await db.cron_runs.insert_one({
+                "run_id": x_webhook_id,
+                "cron": "commission-alerts",
+                "received_at": datetime.now(timezone.utc).isoformat(),
+            })
+        except Exception:
+            # DuplicateKeyError → another worker already accepted this run.
             return {"accepted": True, "duplicate": True, "run_id": x_webhook_id}
-        await db.cron_runs.insert_one({
-            "run_id": x_webhook_id,
-            "cron": "commission-alerts",
-            "received_at": datetime.now(timezone.utc).isoformat(),
-        })
     background.add_task(_scan_and_send_alerts)
     return {"accepted": True, "run_id": x_webhook_id}
 
@@ -966,6 +976,7 @@ async def startup():
     await db.document_types.create_index([("user_id", 1), ("name", 1)])
     await db.signer_intakes.create_index("token", unique=True)
     await db.signer_intakes.create_index([("user_id", 1), ("created_at", -1)])
+    await db.cron_runs.create_index("run_id", unique=True)
     await db.login_attempts.create_index("identifier")
 
     admin_email = os.environ.get("ADMIN_EMAIL", "admin@example.com").lower()

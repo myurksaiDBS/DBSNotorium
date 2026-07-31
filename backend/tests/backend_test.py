@@ -197,8 +197,19 @@ class TestCommissionAlerts:
 
         today = date(2026, 7, 31)
         cases = {
-            61: None, 60: 60, 45: 60, 30: 30, 29: 30,
-            14: 14, 13: 14, 7: 7, 6: 7, 1: 1, 0: 0, -1: -1,
+            100: None,
+            60: 60,
+            45: 60,
+            31: 60,
+            30: 30,
+            15: 30,
+            14: 14,
+            8: 14,
+            7: 7,
+            2: 7,
+            1: 1,
+            0: 0,
+            -1: -1,
         }
         actual = {
             days_left: _current_alert_bucket(today + timedelta(days=days_left), today)
@@ -298,8 +309,97 @@ class TestCommissionAlerts:
         time.sleep(1)
         assert _get_admin(credentials["email"]).get("last_alert_email_id") is None
 
-    def test_cron_45_day_send_dedup_far_future_and_expired(self, credentials,
-                                                           isolated_commission_state):
+    def test_profile_renewal_resets_dedup_and_allows_new_cycle_alert(
+            self, authenticated_client, credentials, isolated_commission_state):
+        env = dotenv_values("/app/backend/.env")
+        email = credentials["email"]
+        today = datetime.now(timezone.utc).date()
+        old_expiry = (today + timedelta(days=30)).isoformat()
+        new_expiry = (today + timedelta(days=45)).isoformat()
+        old_email_id = f"TEST_OLD_EMAIL_{uuid.uuid4().hex}"
+        _update_admin(email, set_values={
+            "commission_expires": old_expiry,
+            "alerts_enabled": True,
+            "last_alert_bucket": 60,
+            "last_alert_sent_at": "2026-01-01T00:00:00+00:00",
+            "last_alert_email_id": old_email_id,
+        })
+
+        renewed = authenticated_client.put(
+            f"{BASE_URL}/api/auth/profile",
+            json={"commission_expires": new_expiry},
+            timeout=20,
+        )
+        assert renewed.status_code == 200, renewed.text
+        assert renewed.json()["commission_expires"] == new_expiry
+        persisted = _get_admin(email)
+        assert persisted["commission_expires"] == new_expiry
+        assert persisted.get("last_alert_bucket") is None
+        assert persisted.get("last_alert_sent_at") is None
+        assert persisted.get("last_alert_email_id") is None
+
+        run_id = f"TEST_COMMISSION_RENEWAL_{uuid.uuid4().hex}"
+        fired = requests.post(
+            f"{BASE_URL}/api/cron/commission-alerts",
+            headers={
+                "Authorization": f"Bearer {env['WEBHOOK_CRON_SECRET']}",
+                "X-Webhook-Id": run_id,
+            },
+            timeout=20,
+        )
+        assert fired.status_code == 200
+        assert fired.json() == {"accepted": True, "run_id": run_id}
+        alerted = _wait_for_admin_field(email, "last_alert_bucket", 60)
+        assert isinstance(alerted.get("last_alert_email_id"), str)
+        assert alerted["last_alert_email_id"] and alerted["last_alert_email_id"] != old_email_id
+
+    def test_concurrent_duplicate_webhook_enqueues_exactly_one_scan(
+            self, credentials, isolated_commission_state):
+        env = dotenv_values("/app/backend/.env")
+        email = credentials["email"]
+        today = datetime.now(timezone.utc).date()
+        _update_admin(
+            email,
+            set_values={
+                "commission_expires": (today + timedelta(days=100)).isoformat(),
+                "alerts_enabled": True,
+            },
+            unset_fields=("last_alert_bucket", "last_alert_sent_at", "last_alert_email_id"),
+        )
+        run_id = f"TEST_COMMISSION_CONCURRENT_{uuid.uuid4().hex}"
+        endpoint = f"{BASE_URL}/api/cron/commission-alerts"
+        headers = {
+            "Authorization": f"Bearer {env['WEBHOOK_CRON_SECRET']}",
+            "X-Webhook-Id": run_id,
+        }
+
+        def deliver(_):
+            return requests.post(endpoint, headers=headers, timeout=20)
+
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            responses = list(pool.map(deliver, range(2)))
+        assert [response.status_code for response in responses] == [200, 200]
+        payloads = [response.json() for response in responses]
+        assert sum(payload.get("duplicate") is True for payload in payloads) == 1
+        assert sum("duplicate" not in payload for payload in payloads) == 1
+        assert all(payload["accepted"] is True and payload["run_id"] == run_id for payload in payloads)
+
+        async def inspect(database):
+            indexes = await database.cron_runs.index_information()
+            run_id_indexes = [
+                spec for spec in indexes.values()
+                if spec.get("key") == [("run_id", 1)]
+            ]
+            return await database.cron_runs.count_documents({"run_id": run_id}), run_id_indexes
+
+        count, indexes = _db_call(inspect)
+        assert count == 1
+        assert len(indexes) == 1 and indexes[0].get("unique") is True
+        time.sleep(1)
+        assert _get_admin(email).get("last_alert_email_id") is None
+
+    def test_full_sequential_cron_sends_each_new_bucket_and_dedups_immediate_refire(
+            self, credentials, isolated_commission_state):
         env = dotenv_values("/app/backend/.env")
         email = credentials["email"]
         endpoint = f"{BASE_URL}/api/cron/commission-alerts"
@@ -316,38 +416,37 @@ class TestCommissionAlerts:
             assert response.json() == {"accepted": True, "run_id": run_id}
 
         today = datetime.now(timezone.utc).date()
+        sequence = [(45, 60), (29, 30), (13, 14), (5, 7), (0, 0), (-1, -1)]
         _update_admin(
             email,
-            set_values={"commission_expires": (today + timedelta(days=45)).isoformat(), "alerts_enabled": True},
+            set_values={"alerts_enabled": True},
             unset_fields=("last_alert_bucket", "last_alert_sent_at", "last_alert_email_id"),
         )
-        fire("45DAY")
-        first = _wait_for_admin_field(email, "last_alert_bucket", 60)
-        first_id, first_sent_at = first["last_alert_email_id"], first["last_alert_sent_at"]
-        assert isinstance(first_id, str) and first_id
+        previous_email_id = None
+        delivered_ids = []
+        for days_left, expected_bucket in sequence:
+            _update_admin(
+                email,
+                set_values={"commission_expires": (today + timedelta(days=days_left)).isoformat()},
+            )
+            fire(f"{expected_bucket}_FIRST")
+            sent = _wait_for_admin_field(email, "last_alert_bucket", expected_bucket)
+            current_id = sent.get("last_alert_email_id")
+            current_sent_at = sent.get("last_alert_sent_at")
+            assert isinstance(current_id, str) and current_id
+            assert current_id != previous_email_id
+            delivered_ids.append(current_id)
 
-        fire("DEDUP")
-        time.sleep(1.5)
-        deduped = _get_admin(email)
-        assert deduped["last_alert_bucket"] == 60
-        assert deduped["last_alert_email_id"] == first_id
-        assert deduped["last_alert_sent_at"] == first_sent_at
+            fire(f"{expected_bucket}_DEDUP")
+            time.sleep(1.2)
+            deduped = _get_admin(email)
+            assert deduped["last_alert_bucket"] == expected_bucket
+            assert deduped["last_alert_email_id"] == current_id
+            assert deduped["last_alert_sent_at"] == current_sent_at
+            previous_email_id = current_id
 
-        _update_admin(email, set_values={"commission_expires": (today + timedelta(days=100)).isoformat()})
-        fire("FAR")
-        time.sleep(1.5)
-        far = _get_admin(email)
-        assert far["last_alert_email_id"] == first_id and far["last_alert_sent_at"] == first_sent_at
-
-        _update_admin(
-            email,
-            set_values={"commission_expires": (today - timedelta(days=1)).isoformat()},
-            unset_fields=("last_alert_bucket", "last_alert_sent_at", "last_alert_email_id"),
-        )
-        fire("EXPIRED")
-        expired = _wait_for_admin_field(email, "last_alert_bucket", -1)
-        assert isinstance(expired["last_alert_email_id"], str) and expired["last_alert_email_id"]
-        assert expired["last_alert_email_id"] != first_id
+        assert len(delivered_ids) == 6
+        assert len(set(delivered_ids)) == 6
 
         from server import _render_commission_email
         subject, html = _render_commission_email("Matthew", -1, today - timedelta(days=1), BASE_URL)

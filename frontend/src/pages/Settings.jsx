@@ -41,12 +41,17 @@ export default function Settings() {
   };
 
   const toggleAlerts = async (checked) => {
+    const previous = form.alerts_enabled;
     setForm(f => ({ ...f, alerts_enabled: checked }));
     const res = await updateProfile({ alerts_enabled: checked });
     if (res.ok) {
       toast.success(checked ? "Commission alerts enabled" : "Commission alerts paused");
       loadStatus();
-    } else toast.error(res.error);
+    } else {
+      // Revert optimistic update if persistence failed
+      setForm(f => ({ ...f, alerts_enabled: previous }));
+      toast.error(res.error);
+    }
   };
 
   const sendTest = async () => {
@@ -62,11 +67,11 @@ export default function Settings() {
   const daysLeft = alertsStatus?.days_left;
   const daysBadge = () => {
     if (daysLeft == null) return null;
-    if (daysLeft < 0) return <Badge className="rounded-sm bg-[#FDECEC] text-[#991B1B] border border-[#F4B4B4]" variant="outline">Expired {Math.abs(daysLeft)} days ago</Badge>;
-    if (daysLeft <= 7) return <Badge className="rounded-sm bg-[#FDECEC] text-[#991B1B] border border-[#F4B4B4]" variant="outline">{daysLeft} days left</Badge>;
-    if (daysLeft <= 30) return <Badge className="rounded-sm bg-[#FEF9EC] text-[#7A5B00] border border-[#F0D28A]" variant="outline">{daysLeft} days left</Badge>;
-    if (daysLeft <= 60) return <Badge className="rounded-sm bg-[#EEF2FB] text-[#00317A] border border-[#C7D4EC]" variant="outline">{daysLeft} days left</Badge>;
-    return <Badge className="rounded-sm bg-[#E8F5EC] text-[#146334] border border-[#B7E0C1]" variant="outline">{daysLeft} days left</Badge>;
+    if (daysLeft < 0) return <Badge data-testid="alerts-days-left" className="rounded-sm bg-[#FDECEC] text-[#991B1B] border border-[#F4B4B4]" variant="outline">Expired {Math.abs(daysLeft)} days ago</Badge>;
+    if (daysLeft <= 7) return <Badge data-testid="alerts-days-left" className="rounded-sm bg-[#FDECEC] text-[#991B1B] border border-[#F4B4B4]" variant="outline">{daysLeft} days left</Badge>;
+    if (daysLeft <= 30) return <Badge data-testid="alerts-days-left" className="rounded-sm bg-[#FEF9EC] text-[#7A5B00] border border-[#F0D28A]" variant="outline">{daysLeft} days left</Badge>;
+    if (daysLeft <= 60) return <Badge data-testid="alerts-days-left" className="rounded-sm bg-[#EEF2FB] text-[#00317A] border border-[#C7D4EC]" variant="outline">{daysLeft} days left</Badge>;
+    return <Badge data-testid="alerts-days-left" className="rounded-sm bg-[#E8F5EC] text-[#146334] border border-[#B7E0C1]" variant="outline">{daysLeft} days left</Badge>;
   };
 
   return (
@@ -134,7 +139,7 @@ export default function Settings() {
               <>
                 <div className="flex items-center justify-between">
                   <span className="text-[#4B5563]">Commission expires</span>
-                  <span className="font-mono-plex text-[#111827]">
+                  <span className="font-mono-plex text-[#111827]" data-testid="alerts-expires-on">
                     {new Date(alertsStatus.commission_expires).toLocaleDateString(undefined,
                       { year: "numeric", month: "short", day: "numeric" })}
                   </span>
@@ -146,9 +151,9 @@ export default function Settings() {
                 {alertsStatus.upcoming_alerts?.length > 0 && (
                   <div className="pt-3">
                     <div className="text-[10px] uppercase tracking-widest text-[#4B5563] mb-2">Upcoming alerts</div>
-                    <ul className="space-y-1">
+                    <ul className="space-y-1" data-testid="alerts-upcoming-list">
                       {alertsStatus.upcoming_alerts.map((a) => (
-                        <li key={a.days_out} className="flex items-center justify-between">
+                        <li key={a.days_out} className="flex items-center justify-between" data-testid={`alerts-upcoming-${a.days_out}`}>
                           <span className="text-[#111827]">
                             {a.days_out === 0 ? "Day of expiration" : `${a.days_out}-day notice`}
                           </span>
