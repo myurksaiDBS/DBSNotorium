@@ -82,6 +82,42 @@ export default function Settings() {
     toast.success("Seal removed");
     loadSeal();
   };
+  const loadFirmLogo = async () => {
+    try {
+      const { data } = await api.get("/auth/firm-logo");
+      setFirmLogo(data);
+    } catch { /* no-op */ }
+  };
+  const onFirmLogoPick = (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    if (!/^image\/(png|jpe?g)$/.test(file.type)) {
+      toast.error("Please choose a PNG or JPEG image.");
+      return;
+    }
+    if (file.size > 500_000) {
+      toast.error("Firm logo must be under 500 KB.");
+      return;
+    }
+    const reader = new FileReader();
+    reader.onload = async () => {
+      setLogoUploading(true);
+      try {
+        await api.put("/auth/firm-logo", { firm_logo_data: reader.result });
+        toast.success("Firm logo uploaded");
+        loadFirmLogo();
+      } catch (err) {
+        toast.error(formatApiError(err.response?.data?.detail) || "Upload failed");
+      } finally { setLogoUploading(false); }
+    };
+    reader.readAsDataURL(file);
+  };
+  const removeFirmLogo = async () => {
+    if (!window.confirm("Remove your firm logo? Certificates will show only the Domini shield.")) return;
+    await api.delete("/auth/firm-logo");
+    toast.success("Firm logo removed");
+    loadFirmLogo();
+  };
   const changePassword = async (e) => {
     e.preventDefault();
     if (pwd.new_password.length < 8) { toast.error("New password must be at least 8 characters"); return; }
