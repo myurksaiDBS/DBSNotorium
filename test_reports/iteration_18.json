@@ -1,0 +1,72 @@
+{
+  "summary": "Backend-only iteration 18 verification ran against the public preview URL. The requested email-history fix is not present in the running/source code: new recipient/error_msg rows still serialize as null, and mixed rows incorrectly prefer legacy to/error. Legacy-only to/error serialization passed. Stripe fail-fast configuration, billing status, both checkout plans, successful portal creation, subscription write gates, and all 35 iteration 13-15 regressions passed. Iteration 16/17 email-send tests were partially blocked by the external email provider's exhausted rate limit.",
+  "backend_issues": {
+    "critical": [
+      {
+        "endpoint": "GET /api/entries/{entry_id}/email-history",
+        "issue": "HIGH regression remains unfixed. New writer rows containing recipient/error_msg return to=null and error=null. Rows containing both schemas return legacy to/error instead of preferring recipient/error_msg. A legacy-only row {to:'legacy@x.com', error:'old err'} does serialize correctly.",
+        "priority": "HIGH"
+      },
+      {
+        "endpoint": "POST /api/cron/delivery-bounces/preview; POST /api/cron/delivery-bounces background delivery",
+        "issue": "External email provider returned HTTP 429 'email rate limit exceeded'. Preview returned API 400 and cron could not mark the seeded bounce as notified, blocking 3 iteration 16/17 delivery assertions after one retry.",
+        "priority": "HIGH"
+      }
+    ],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_iteration18.py",
+    "/app/backend/tests/test_iteration17.py",
+    "/app/backend/tests/test_iteration16.py",
+    "/app/backend/tests/test_iteration15.py",
+    "/app/backend/tests/test_iteration14.py",
+    "/app/backend/tests/test_billing.py",
+    "/app/test_reports/pytest/notarium_iteration18_targeted.xml",
+    "/app/test_reports/pytest/notarium_iteration18_iteration17_targeted.xml",
+    "/app/test_reports/pytest/notarium_iteration18_iteration16_regression.xml",
+    "/app/test_reports/pytest/notarium_iteration18_iteration15_regression.xml",
+    "/app/test_reports/pytest/notarium_iteration18_iteration14_expected_regression.xml",
+    "/app/test_reports/pytest/notarium_iteration18_billing_regression.xml"
+  ],
+  "action_items": [
+    "Apply the documented serializer change in server.py: use d.get('recipient') or d.get('to') for response 'to', and d.get('error_msg') or d.get('error') for response 'error'. The current file still uses only d.get('to') and d.get('error').",
+    "Restore or increase the external email-provider quota, then rerun the 3 blocked delivery preview/cron tests.",
+    "After the serializer change, rerun test_iteration18.py and test_iteration17.py."
+  ],
+  "critical_code_review_comments": [
+    "server.py:1338-1342 directly reads only legacy to/error fields, contradicting the iteration 18 reference and causing both reproduced compatibility failures.",
+    "routes/billing.py correctly uses os.environ['STRIPE_SECRET_KEY']; removing the variable caused register_billing to raise KeyError immediately, as required.",
+    "routes/billing.py performs synchronous Stripe SDK network calls inside async FastAPI endpoints, which can block the event loop during provider latency.",
+    "routes/billing.py validates checkout origin_url but billing_portal directly trusts the request origin_url when constructing Stripe's return_url; apply the same _validate_origin_url allowlist to the portal path.",
+    "server.py remains approximately 2,484 lines, above the 700-line maintainability threshold; continue extracting focused routers/services."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_iteration18.py",
+    "/app/test_reports/pytest/notarium_iteration18_targeted.xml",
+    "/app/test_reports/pytest/notarium_iteration18_iteration17_targeted.xml",
+    "/app/test_reports/pytest/notarium_iteration18_iteration17_retry.xml",
+    "/app/test_reports/pytest/notarium_iteration18_iteration16_regression.xml",
+    "/app/test_reports/pytest/notarium_iteration18_iteration15_regression.xml",
+    "/app/test_reports/pytest/notarium_iteration18_iteration14_regression.xml",
+    "/app/test_reports/pytest/notarium_iteration18_iteration14_expected_regression.xml",
+    "/app/test_reports/pytest/notarium_iteration18_billing_regression.xml",
+    "/app/test_reports/pytest/notarium_iteration18_billing_targeted.xml",
+    "/app/test_reports/pytest/notarium_iteration18_stripe_config.xml",
+    "/app/test_reports/iteration_18.json"
+  ],
+  "success_rate": {
+    "backend": "94% assessed (45/48 passed); 3 additional email-provider-quota-blocked tests. All 35 iteration 13-15 regressions passed.",
+    "frontend": "Not tested (backend-only request)"
+  },
+  "seed_data_creation": "Created temporary journal entries and new/legacy/mixed certificate-email rows, billing users, Stripe test customers/sessions, invite/auth/logo/bounce regression resources, and expired-trial accounts. Mongo resources and Stripe test customers were cleaned up; immutable Stripe test Checkout/Portal session history remains.",
+  "should_call_test_agent_after_fix": true,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "The public root is healthy. Run test_iteration18.py first: legacy-schema, Stripe fail-fast, and successful billing portal tests pass; new-writer-schema and new-fields-take-precedence fail. Billing regression is 15/15, selected iteration 14 baseline is 16/16 (the explicitly excluded pre-existing CORS wildcard and invite wrapper assertions were not counted), iteration 15 is 4/4, totaling the expected 35. Iteration 16 is 6/8 and iteration 17 is 1/3 solely because email provider quota blocks three send-dependent assertions in addition to the email-history defect.",
+  "rca_of_the_issue": "The claimed email-history fallback was not applied to the actual source/deployment. server.py lines 1338 and 1342 still project d.get('to') and d.get('error') only. Therefore new rows become null and mixed rows expose legacy values. Separately, backend logs confirm upstream HTTP 429 responses with 'email rate limit exceeded', causing preview 400 responses and preventing cron delivery marking; this is an external quota blocker rather than evidence of the billing extraction failing."
+}

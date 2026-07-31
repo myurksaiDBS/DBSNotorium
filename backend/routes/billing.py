@@ -91,7 +91,7 @@ def _validate_origin_url(origin_url: str) -> str:
 
 def register_billing(api, db, get_current_user):
     """Attach all billing routes to `api` and return the subscription gate dep."""
-    stripe.api_key = os.environ.get("STRIPE_SECRET_KEY") or "sk_test_emergent"
+    stripe.api_key = os.environ["STRIPE_SECRET_KEY"]
     stripe_webhook_secret = os.environ.get("STRIPE_WEBHOOK_SECRET", "")
     stripe_publishable = os.environ.get("STRIPE_PUBLISHABLE_KEY", "")
 
