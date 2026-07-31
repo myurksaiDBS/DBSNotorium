@@ -1,0 +1,55 @@
+{
+  "summary": "Backend-only iteration 19 verification completed against the public preview URL. The restarted deployment now passes all three email-history compatibility assertions: new recipient/error_msg rows map to to/error, legacy to/error rows remain compatible, and mixed rows prefer the new fields. Billing portal valid-origin creation also passes, but the requested open-redirect fix is not deployed: https://evil.com is accepted with HTTP 200 instead of rejected with HTTP 400. All 41 requested billing/iteration 14-16 non-provider regressions passed; email-quota-dependent delivery tests were intentionally not run.",
+  "backend_issues": {
+    "critical": [
+      {
+        "endpoint": "POST /api/billing/portal",
+        "issue": "Foreign origin_url https://evil.com is accepted and returns a Stripe portal_url with HTTP 200. The endpoint must reject a host different from ALERT_APP_URL with HTTP 400.",
+        "priority": "HIGH"
+      }
+    ],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_iteration18.py",
+    "/app/backend/tests/test_billing.py",
+    "/app/backend/tests/test_iteration14.py",
+    "/app/backend/tests/test_iteration15.py",
+    "/app/backend/tests/test_iteration16.py",
+    "/app/test_reports/pytest/notarium_iteration19_targeted.xml",
+    "/app/test_reports/pytest/notarium_iteration19_billing_regression.xml",
+    "/app/test_reports/pytest/notarium_iteration19_iteration14_regression.xml",
+    "/app/test_reports/pytest/notarium_iteration19_iteration15_regression.xml",
+    "/app/test_reports/pytest/notarium_iteration19_iteration16_non_provider_regression.xml"
+  ],
+  "action_items": [
+    "In billing_portal, pass the request/default origin through _validate_origin_url before constructing Stripe return_url, restart the backend, and rerun the iteration 19 targeted test."
+  ],
+  "critical_code_review_comments": [
+    "routes/billing.py:292-297 reads origin_url directly and interpolates origin.rstrip('/') into Stripe return_url; unlike billing_checkout, it never calls _validate_origin_url. This source/deployment mismatch is the direct cause of the reproduced open redirect.",
+    "Stripe SDK network calls remain synchronous inside async FastAPI endpoints, so provider latency can block the event loop; move blocking Stripe calls to a threadpool or use an async integration in a future refactor."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_iteration18.py",
+    "/app/test_reports/pytest/notarium_iteration19_targeted.xml",
+    "/app/test_reports/pytest/notarium_iteration19_billing_regression.xml",
+    "/app/test_reports/pytest/notarium_iteration19_iteration14_regression.xml",
+    "/app/test_reports/pytest/notarium_iteration19_iteration15_regression.xml",
+    "/app/test_reports/pytest/notarium_iteration19_iteration16_non_provider_regression.xml",
+    "/app/test_reports/iteration_19.json"
+  ],
+  "success_rate": {
+    "backend": "98% (45/46 executed tests passed: targeted 4/5; requested regressions 41/41)",
+    "frontend": "Not tested (backend-only request)"
+  },
+  "seed_data_creation": "Created temporary journal entries, new/legacy/mixed certificate-email rows, billing/regression users, Stripe test customers, Checkout Sessions, Portal Sessions, invite/auth/logo/seal resources, and expired-trial accounts. Mongo resources and Stripe test customers were cleaned up; immutable Stripe sandbox session history remains.",
+  "should_call_test_agent_after_fix": false,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "Rerun test_iteration18.py after applying portal origin validation. Email-history is confirmed green for all three required schemas after the backend restart. Valid portal origin returns a billing.stripe.com URL. The only targeted failure is evil.com receiving HTTP 200. Regression totals: billing 15/15, selected iteration 14 baseline 16/16, iteration 15 4/4, and iteration 16 non-provider 6/6. The provider-dependent preview/cron/real-send tests were intentionally skipped per request.",
+  "rca_of_the_issue": "billing_checkout calls _validate_origin_url, but billing_portal does not. It reads body.origin_url (or ALERT_APP_URL) and directly builds return_url, so an authenticated customer can supply https://evil.com and receive a valid Stripe portal session that returns to the attacker-controlled host. Reproduction: create a test account, perform a valid checkout to obtain stripe_customer_id, then POST /api/billing/portal with {\"origin_url\":\"https://evil.com\"}; observed HTTP 200 with portal_url instead of HTTP 400."
+}

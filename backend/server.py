@@ -1335,11 +1335,13 @@ async def entry_email_history(entry_id: str, user=Depends(get_current_user)):
     ).sort("sent_at", -1).to_list(200)
     return [{
         "id": str(d["_id"]),
-        "to": d.get("to"),
+        # Support both the new (recipient/error_msg) and legacy (to/error)
+        # writer schemas so the Resend UI can prefill from any historical row.
+        "to": d.get("recipient") or d.get("to"),
         "subject": d.get("subject"),
         "status": d.get("status"),
         "email_id": d.get("email_id"),
-        "error": d.get("error"),
+        "error": d.get("error_msg") or d.get("error"),
         "sent_at": d.get("sent_at"),
     } for d in docs]
 

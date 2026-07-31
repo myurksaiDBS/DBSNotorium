@@ -142,9 +142,9 @@ class TestStripeSecretConfiguration:
 
 
 class TestBillingPortalRegression:
-    """A Stripe customer created by checkout can open the billing portal."""
+    """Portal rejects foreign origins and still accepts the configured app origin."""
 
-    def test_checkout_customer_can_create_portal_session(self):
+    def test_checkout_customer_portal_rejects_foreign_origin_and_accepts_valid_origin(self):
         email = f"test.iter18.portal.{uuid.uuid4().hex}@gmail.com"
         session = requests.Session()
         session.headers.update({"Content-Type": "application/json"})
@@ -176,6 +176,14 @@ class TestBillingPortalRegression:
             )
             assert portal.status_code == 200, portal.text
             assert portal.json()["portal_url"].startswith("https://billing.stripe.com/")
+
+            rejected = session.post(
+                f"{BASE_URL}/api/billing/portal",
+                json={"origin_url": "https://evil.com"},
+                timeout=60,
+            )
+            assert rejected.status_code == 400, rejected.text
+            assert rejected.json()["detail"] == "origin_url host not allowed"
 
             async def fetch_customer(database):
                 user = await database.users.find_one({"_id": ObjectId(user_id)})
