@@ -277,6 +277,7 @@ async def me(user=Depends(get_current_user)):
         "state": user.get("state"),
         "alerts_enabled": user.get("alerts_enabled", True),
         "last_alert_sent_at": user.get("last_alert_sent_at"),
+        "has_seal": bool(user.get("seal_data")),
     }
 
 @api.post("/auth/refresh")
@@ -845,6 +846,31 @@ def _render_certificate_pdf(entry: dict, notary: dict) -> bytes:
     ]))
     elems.append(notary_bar)
 
+    # Optional custom notary seal stamped beside the attestation block. Stored
+    # as a base64 data URL on the user doc; keep this small and non-fatal so
+    # a bad blob never breaks certificate rendering.
+    seal_data = notary.get("seal_data") or ""
+    if seal_data.startswith("data:image/") and "base64," in seal_data:
+        try:
+            seal_bytes = base64.b64decode(seal_data.split("base64,", 1)[1])
+            seal_img = RLImage(io.BytesIO(seal_bytes), width=1.2*inch, height=1.2*inch)
+            seal_row = Table(
+                [[Paragraph("OFFICIAL NOTARY SEAL", label), seal_img]],
+                colWidths=[3.0*inch, 3.8*inch],
+            )
+            seal_row.setStyle(TableStyle([
+                ('VALIGN', (0,0), (-1,-1), 'MIDDLE'),
+                ('ALIGN', (1,0), (1,0), 'RIGHT'),
+                ('LEFTPADDING', (0,0), (-1,-1), 12),
+                ('RIGHTPADDING', (0,0), (-1,-1), 12),
+                ('TOPPADDING', (0,0), (-1,-1), 10),
+                ('BOTTOMPADDING', (0,0), (-1,-1), 10),
+                ('LINEABOVE', (0,0), (-1,0), 0.5, colors.HexColor("#E2E8F0")),
+            ]))
+            elems.append(seal_row)
+        except Exception:
+            pass
+
     doc.build(elems, onFirstPage=stamp, onLaterPages=stamp)
     buf.seek(0)
     return buf.read()
@@ -1379,6 +1405,37 @@ async def dashboard_stats(user=Depends(get_current_user)):
 
     total_clients = await db.clients.count_documents({"user_id": user["_id"]})
 
+    # ---- Delivery stats (last 30 days of certificate emails) ----
+    month_start = (now - timedelta(days=30)).isoformat()
+    email_docs = await db.certificate_email_log.find(
+        {"user_id": user["_id"], "sent_at": {"$gte": month_start}}
+    ).to_list(5000)
+    sent_count = sum(1 for e in email_docs if e.get("status") == "sent")
+    failed_count = sum(1 for e in email_docs if e.get("status") == "failed")
+    # Top signers this month — join to entries so we surface the signer name,
+    # not just their email address.
+    signer_totals: dict = {}
+    for e in email_docs:
+        if e.get("status") != "sent":
+            continue
+        eid = e.get("entry_id")
+        if not eid:
+            continue
+        signer_totals[eid] = signer_totals.get(eid, 0) + 1
+    top_signers = []
+    if signer_totals:
+        ordered_ids = sorted(signer_totals, key=signer_totals.get, reverse=True)[:5]
+        oid_list = [ObjectId(i) for i in ordered_ids if len(i) == 24]
+        entries_by_id = {}
+        async for ent in db.entries.find({"_id": {"$in": oid_list},
+                                          "user_id": user["_id"]}):
+            entries_by_id[str(ent["_id"])] = ent.get("signer_name") or "—"
+        for eid in ordered_ids:
+            top_signers.append({
+                "name": entries_by_id.get(eid, "—"),
+                "count": signer_totals[eid],
+            })
+
     return {
         "total_entries": total_entries,
         "month_entries": len(month_docs),
@@ -1387,6 +1444,60 @@ async def dashboard_stats(user=Depends(get_current_user)):
         "total_clients": total_clients,
         "monthly_series": months,
         "type_breakdown": type_breakdown,
+        "delivery": {
+            "sent": sent_count,
+            "failed": failed_count,
+            "total": len(email_docs),
+            "top_signers": top_signers,
+        },
+    }
+
+# ---- Account customization: password + seal ----
+class PasswordChangeIn(BaseModel):
+    current_password: str
+    new_password: str = Field(min_length=8)
+
+@api.post("/auth/change-password")
+async def change_password(payload: PasswordChangeIn, user=Depends(get_current_user)):
+    # Re-fetch the raw doc so we still have the bcrypt hash (get_current_user strips it).
+    doc = await db.users.find_one({"_id": ObjectId(user["_id"])})
+    if not doc or not verify_password(payload.current_password, doc["password_hash"]):
+        raise HTTPException(status_code=400, detail="Current password is incorrect")
+    await db.users.update_one(
+        {"_id": ObjectId(user["_id"])},
+        {"$set": {"password_hash": hash_password(payload.new_password)}})
+    return {"ok": True}
+
+class SealIn(BaseModel):
+    seal_data: str  # data:image/png;base64,... — kept small (< 500KB)
+
+@api.put("/auth/seal")
+async def upload_seal(payload: SealIn, user=Depends(get_current_user)):
+    if not payload.seal_data.startswith("data:image/"):
+        raise HTTPException(status_code=400, detail="Seal must be a PNG or JPEG image (data URL).")
+    if len(payload.seal_data) > 700_000:  # ~500KB binary after base64 overhead
+        raise HTTPException(status_code=400, detail="Seal image is too large. Try under 500 KB.")
+    await db.users.update_one(
+        {"_id": ObjectId(user["_id"])},
+        {"$set": {"seal_data": payload.seal_data,
+                  "seal_updated_at": datetime.now(timezone.utc).isoformat()}})
+    return {"ok": True}
+
+@api.delete("/auth/seal")
+async def delete_seal(user=Depends(get_current_user)):
+    await db.users.update_one(
+        {"_id": ObjectId(user["_id"])},
+        {"$unset": {"seal_data": "", "seal_updated_at": ""}})
+    return {"ok": True}
+
+@api.get("/auth/seal")
+async def get_seal(user=Depends(get_current_user)):
+    doc = await db.users.find_one({"_id": ObjectId(user["_id"])},
+                                  {"seal_data": 1, "seal_updated_at": 1})
+    return {
+        "has_seal": bool(doc and doc.get("seal_data")),
+        "seal_data": (doc or {}).get("seal_data"),
+        "updated_at": (doc or {}).get("seal_updated_at"),
     }
 
 # ---- Clients ----

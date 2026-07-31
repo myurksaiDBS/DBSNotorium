@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { api } from "@/api";
 import { Card } from "@/components/ui/card";
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid, LineChart, Line, PieChart, Pie, Cell, Legend } from "recharts";
-import { BookOpen, Users, DollarSign, TrendingUp } from "lucide-react";
+import { BookOpen, Users, DollarSign, TrendingUp, CheckCircle2, AlertCircle, Award } from "lucide-react";
 import { useAuth } from "@/context/AuthContext";
 
 const NAVY = "#00317A";
@@ -111,6 +111,53 @@ export default function Dashboard() {
           )}
         </Card>
       </div>
+
+      {/* Delivery Stats */}
+      <Card className="p-6 bg-white border-[#E2E8F0] rounded-sm shadow-none" data-testid="delivery-stats-card">
+        <div className="flex items-baseline justify-between mb-4">
+          <div>
+            <div className="text-[10px] uppercase tracking-[0.25em] text-[#DF0D1B]">Last 30 days</div>
+            <h3 className="font-serif text-xl text-[#00317A]">Certificate Delivery</h3>
+          </div>
+          <div className="text-xs text-[#4B5563] font-mono-plex" data-testid="delivery-total">
+            {stats.delivery?.total ?? 0} total attempts
+          </div>
+        </div>
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-5">
+          <div className="p-4 bg-[#F1FAF3] border border-[#B7E0C1] rounded-sm">
+            <div className="flex items-center gap-2 text-[#146334] mb-2">
+              <CheckCircle2 className="w-4 h-4" />
+              <span className="text-[10px] uppercase tracking-widest">Delivered</span>
+            </div>
+            <div className="font-serif text-3xl text-[#146334]" data-testid="delivery-sent">{stats.delivery?.sent ?? 0}</div>
+          </div>
+          <div className="p-4 bg-[#FDECEC] border border-[#F4B4B4] rounded-sm">
+            <div className="flex items-center gap-2 text-[#991B1B] mb-2">
+              <AlertCircle className="w-4 h-4" />
+              <span className="text-[10px] uppercase tracking-widest">Bounced / Failed</span>
+            </div>
+            <div className="font-serif text-3xl text-[#991B1B]" data-testid="delivery-failed">{stats.delivery?.failed ?? 0}</div>
+          </div>
+          <div className="p-4 bg-[#F4F7F9] border border-[#E2E8F0] rounded-sm">
+            <div className="flex items-center gap-2 text-[#00317A] mb-2">
+              <Award className="w-4 h-4" />
+              <span className="text-[10px] uppercase tracking-widest">Top Signers</span>
+            </div>
+            {(stats.delivery?.top_signers?.length ?? 0) === 0 ? (
+              <div className="text-xs text-[#4B5563] italic">No delivered certificates yet.</div>
+            ) : (
+              <ul className="space-y-1" data-testid="delivery-top-signers">
+                {stats.delivery.top_signers.map((s, i) => (
+                  <li key={i} className="flex items-center justify-between text-xs">
+                    <span className="text-[#111827] font-medium truncate">{s.name}</span>
+                    <span className="font-mono-plex text-[#4B5563]">{s.count}</span>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
+        </div>
+      </Card>
     </div>
   );
 }

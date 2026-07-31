@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useAuth } from "@/context/AuthContext";
 import { api, formatApiError } from "@/api";
 import { Card } from "@/components/ui/card";
@@ -8,7 +8,7 @@ import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
 import { Badge } from "@/components/ui/badge";
 import { Checkbox } from "@/components/ui/checkbox";
-import { BellRing, Send, Mail, ListChecks, Lock } from "lucide-react";
+import { BellRing, Send, Mail, ListChecks, Lock, Stamp, KeyRound, Upload, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 
 export default function Settings() {
@@ -24,6 +24,11 @@ export default function Settings() {
   const [alertsStatus, setAlertsStatus] = useState(null);
   const [testing, setTesting] = useState(false);
   const [checklist, setChecklist] = useState(null);
+  const [seal, setSeal] = useState({ has_seal: false, seal_data: null });
+  const [uploading, setUploading] = useState(false);
+  const [pwd, setPwd] = useState({ current_password: "", new_password: "", confirm: "" });
+  const [pwdSaving, setPwdSaving] = useState(false);
+  const sealInputRef = useRef(null);
 
   const loadStatus = async () => {
     try {
@@ -37,7 +42,60 @@ export default function Settings() {
       setChecklist(data);
     } catch { /* no-op */ }
   };
-  useEffect(() => { loadStatus(); loadChecklist(); }, []);
+  const loadSeal = async () => {
+    try {
+      const { data } = await api.get("/auth/seal");
+      setSeal(data);
+    } catch { /* no-op */ }
+  };
+  const onSealPick = (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    if (!/^image\/(png|jpe?g)$/.test(file.type)) {
+      toast.error("Please choose a PNG or JPEG image.");
+      return;
+    }
+    if (file.size > 500_000) {
+      toast.error("Seal image must be under 500 KB.");
+      return;
+    }
+    const reader = new FileReader();
+    reader.onload = async () => {
+      setUploading(true);
+      try {
+        await api.put("/auth/seal", { seal_data: reader.result });
+        toast.success("Seal uploaded");
+        loadSeal();
+      } catch (err) {
+        toast.error(formatApiError(err.response?.data?.detail) || "Upload failed");
+      } finally { setUploading(false); }
+    };
+    reader.readAsDataURL(file);
+  };
+  const removeSeal = async () => {
+    if (!window.confirm("Remove your saved notary seal?")) return;
+    await api.delete("/auth/seal");
+    toast.success("Seal removed");
+    loadSeal();
+  };
+  const changePassword = async (e) => {
+    e.preventDefault();
+    if (pwd.new_password.length < 8) { toast.error("New password must be at least 8 characters"); return; }
+    if (pwd.new_password !== pwd.confirm) { toast.error("New password and confirmation don't match"); return; }
+    setPwdSaving(true);
+    try {
+      await api.post("/auth/change-password", {
+        current_password: pwd.current_password,
+        new_password: pwd.new_password,
+      });
+      toast.success("Password updated");
+      setPwd({ current_password: "", new_password: "", confirm: "" });
+    } catch (err) {
+      toast.error(formatApiError(err.response?.data?.detail) || "Password change failed");
+    } finally { setPwdSaving(false); }
+  };
+
+  useEffect(() => { loadStatus(); loadChecklist(); loadSeal(); }, []);
 
   const toggleChecklistItem = async (id, done) => {
     // Optimistic update
@@ -220,6 +278,97 @@ export default function Settings() {
         <div className="text-[10px] uppercase tracking-widest text-[#991B1B] mb-2">Signed in as</div>
         <div className="text-[#00317A] font-medium">{user?.email}</div>
       </Card>
+
+      {/* Notary Seal + Password */}
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+        <Card className="p-6 border-[#E2E8F0] rounded-sm shadow-none bg-white" data-testid="seal-card">
+          <div className="flex items-start gap-3 mb-4 pb-4 border-b border-[#E2E8F0]">
+            <div className="w-10 h-10 rounded-sm bg-[#EEF2FB] flex items-center justify-center shrink-0">
+              <Stamp className="w-5 h-5 text-[#00317A]" />
+            </div>
+            <div>
+              <div className="text-[10px] uppercase tracking-[0.25em] text-[#DF0D1B] mb-1">Personal Brand</div>
+              <div className="font-serif text-xl text-[#00317A]">Notary Seal</div>
+              <p className="text-xs text-[#4B5563] mt-1">
+                Optional. Stamps beside your attestation on every certificate PDF. PNG or JPEG, under 500 KB.
+              </p>
+            </div>
+          </div>
+          {seal.has_seal ? (
+            <div className="flex items-center gap-4">
+              <div className="w-24 h-24 border border-[#E2E8F0] rounded-sm p-2 bg-white flex items-center justify-center">
+                <img src={seal.seal_data} alt="Notary seal" className="max-w-full max-h-full object-contain" data-testid="seal-preview" />
+              </div>
+              <div className="flex-1">
+                <div className="text-xs text-[#146334] mb-2">Seal uploaded — it will appear on all future certificates.</div>
+                <div className="flex gap-2">
+                  <Button type="button" size="sm" variant="outline"
+                    onClick={() => sealInputRef.current?.click()}
+                    className="rounded-sm border-[#00317A] text-[#00317A] hover:bg-[#00317A] hover:text-white"
+                    data-testid="replace-seal-btn">
+                    <Upload className="w-3.5 h-3.5 mr-1" /> Replace
+                  </Button>
+                  <Button type="button" size="sm" variant="ghost"
+                    onClick={removeSeal}
+                    className="rounded-sm text-[#991B1B] hover:bg-[#FDECEC]"
+                    data-testid="remove-seal-btn">
+                    <Trash2 className="w-3.5 h-3.5 mr-1" /> Remove
+                  </Button>
+                </div>
+              </div>
+            </div>
+          ) : (
+            <Button type="button"
+              onClick={() => sealInputRef.current?.click()}
+              disabled={uploading}
+              className="rounded-sm bg-[#00317A] hover:bg-[#00265E] text-white w-full"
+              data-testid="upload-seal-btn">
+              <Upload className="w-4 h-4 mr-2" />
+              {uploading ? "Uploading..." : "Upload notary seal"}
+            </Button>
+          )}
+          <input ref={sealInputRef} type="file" accept="image/png,image/jpeg"
+            onChange={onSealPick} className="hidden" data-testid="seal-file-input" />
+        </Card>
+
+        <Card className="p-6 border-[#E2E8F0] rounded-sm shadow-none bg-white" data-testid="password-card">
+          <div className="flex items-start gap-3 mb-4 pb-4 border-b border-[#E2E8F0]">
+            <div className="w-10 h-10 rounded-sm bg-[#EEF2FB] flex items-center justify-center shrink-0">
+              <KeyRound className="w-5 h-5 text-[#00317A]" />
+            </div>
+            <div>
+              <div className="text-[10px] uppercase tracking-[0.25em] text-[#DF0D1B] mb-1">Security</div>
+              <div className="font-serif text-xl text-[#00317A]">Change Password</div>
+              <p className="text-xs text-[#4B5563] mt-1">Minimum 8 characters. You stay signed in on this device.</p>
+            </div>
+          </div>
+          <form onSubmit={changePassword} className="space-y-3">
+            <div>
+              <Label className="text-xs">Current password</Label>
+              <Input type="password" required value={pwd.current_password}
+                onChange={(e) => setPwd({...pwd, current_password: e.target.value})}
+                className="mt-1 rounded-sm" data-testid="pwd-current" />
+            </div>
+            <div>
+              <Label className="text-xs">New password</Label>
+              <Input type="password" required minLength={8} value={pwd.new_password}
+                onChange={(e) => setPwd({...pwd, new_password: e.target.value})}
+                className="mt-1 rounded-sm" data-testid="pwd-new" />
+            </div>
+            <div>
+              <Label className="text-xs">Confirm new password</Label>
+              <Input type="password" required minLength={8} value={pwd.confirm}
+                onChange={(e) => setPwd({...pwd, confirm: e.target.value})}
+                className="mt-1 rounded-sm" data-testid="pwd-confirm" />
+            </div>
+            <Button type="submit" disabled={pwdSaving}
+              className="rounded-sm bg-[#00317A] hover:bg-[#00265E] text-white w-full"
+              data-testid="change-password-btn">
+              {pwdSaving ? "Updating..." : "Update password"}
+            </Button>
+          </form>
+        </Card>
+      </div>
 
       {/* Renewal Checklist */}
       {checklist && (
