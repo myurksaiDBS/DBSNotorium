@@ -62,7 +62,8 @@ export default function Intakes() {
 
   const smsBody = (item) => {
     const url = publicUrl(item.token);
-    return `Hi — this is ${item.notary_name || "your notary"} with Domini Business Services. Please fill out your signer details before we meet: ${url}`;
+    const notary = item.notary_name || "your notary";
+    return `Hi — this is ${notary} with Domini Business Services. Please fill out your signer details before we meet: ${url}`;
   };
 
   const copySMS = (item) => {

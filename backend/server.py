@@ -140,12 +140,12 @@ class IntakeCreateIn(BaseModel):
     expires_hours: int = 168           # 7 days default
 
 class IntakeSubmitIn(BaseModel):
-    signer_name: str
+    signer_name: str = Field(min_length=1)
     signer_address: Optional[str] = ""
     signer_phone: Optional[str] = ""
     signer_email: Optional[str] = ""
-    id_type: str
-    id_number: str
+    id_type: str = Field(min_length=1)
+    id_number: str = Field(min_length=1)
     id_expiration: Optional[str] = ""
     id_issued_by: Optional[str] = ""
     notes: Optional[str] = ""
@@ -510,11 +510,21 @@ async def delete_doc_type(type_id: str, user=Depends(get_current_user)):
 
 # ---- Signer Intakes (pre-fill portal) ----
 import secrets as _secrets
+from bson.errors import InvalidId
 
-def _serialize_intake(doc: dict) -> dict:
+def _to_oid(value: str) -> ObjectId:
+    """Validate an ObjectId string and raise 400 if malformed."""
+    try:
+        return ObjectId(value)
+    except (InvalidId, TypeError):
+        raise HTTPException(status_code=400, detail="Invalid identifier")
+
+def _serialize_intake(doc: dict, notary_name: str = "") -> dict:
     d = dict(doc)
     d["id"] = str(d.pop("_id"))
     d.pop("user_id", None)
+    if notary_name:
+        d["notary_name"] = notary_name
     return d
 
 @api.get("/intakes")
@@ -524,7 +534,7 @@ async def list_intakes(user=Depends(get_current_user)):
     for d in docs:
         if d.get("status") == "pending" and d.get("expires_at") and d["expires_at"] < now:
             d["status"] = "expired"
-    return [_serialize_intake(d) for d in docs]
+    return [_serialize_intake(d, user.get("name", "")) for d in docs]
 
 @api.post("/intakes")
 async def create_intake(payload: IntakeCreateIn, user=Depends(get_current_user)):
@@ -544,20 +554,22 @@ async def create_intake(payload: IntakeCreateIn, user=Depends(get_current_user))
     }
     result = await db.signer_intakes.insert_one(doc)
     doc["_id"] = result.inserted_id
-    return _serialize_intake(doc)
+    return _serialize_intake(doc, user.get("name", ""))
 
 @api.delete("/intakes/{intake_id}")
 async def delete_intake(intake_id: str, user=Depends(get_current_user)):
-    result = await db.signer_intakes.delete_one({"_id": ObjectId(intake_id), "user_id": user["_id"]})
+    result = await db.signer_intakes.delete_one({"_id": _to_oid(intake_id), "user_id": user["_id"]})
     if result.deleted_count == 0:
         raise HTTPException(status_code=404, detail="Intake not found")
     return {"ok": True}
 
 @api.post("/intakes/{intake_id}/mark-used")
 async def mark_intake_used(intake_id: str, user=Depends(get_current_user)):
-    await db.signer_intakes.update_one(
-        {"_id": ObjectId(intake_id), "user_id": user["_id"]},
+    result = await db.signer_intakes.update_one(
+        {"_id": _to_oid(intake_id), "user_id": user["_id"]},
         {"$set": {"status": "used", "used_at": datetime.now(timezone.utc).isoformat()}})
+    if result.matched_count == 0:
+        raise HTTPException(status_code=404, detail="Intake not found")
     return {"ok": True}
 
 # --- Public routes (no auth) ---
@@ -570,6 +582,8 @@ async def public_get_intake(token: str):
     if doc.get("expires_at") and doc["expires_at"] < now and doc.get("status") == "pending":
         return {"status": "expired"}
     notary = await db.users.find_one({"_id": ObjectId(doc["user_id"])})
+    # Never leak submitted PII back through the public endpoint —
+    # only surface status + display fields.
     return {
         "status": doc.get("status", "pending"),
         "label": doc.get("label", ""),
@@ -578,27 +592,35 @@ async def public_get_intake(token: str):
         "commission_number": notary.get("commission_number") if notary else "",
         "state": notary.get("state") if notary else "",
         "submitted_at": doc.get("submitted_at"),
-        "data": doc.get("data"),
     }
 
 @api.post("/public/intake/{token}")
 async def public_submit_intake(token: str, payload: IntakeSubmitIn):
-    doc = await db.signer_intakes.find_one({"token": token})
-    if not doc:
-        raise HTTPException(status_code=404, detail="Link not found")
     now = datetime.now(timezone.utc)
-    if doc.get("status") in ("completed", "used"):
-        raise HTTPException(status_code=400, detail="This intake has already been submitted.")
-    if doc.get("expires_at") and doc["expires_at"] < now.isoformat():
-        raise HTTPException(status_code=400, detail="This link has expired. Ask your notary for a new one.")
-    await db.signer_intakes.update_one(
-        {"_id": doc["_id"]},
+    now_iso = now.isoformat()
+    # Atomic: only submit if still pending and not expired — prevents
+    # double-submit races and overwriting completed data.
+    updated = await db.signer_intakes.find_one_and_update(
+        {
+            "token": token,
+            "status": "pending",
+            "expires_at": {"$gt": now_iso},
+        },
         {"$set": {
             "data": payload.model_dump(),
             "status": "completed",
-            "submitted_at": now.isoformat(),
-        }})
-    return {"ok": True}
+            "submitted_at": now_iso,
+        }},
+    )
+    if updated:
+        return {"ok": True}
+    # Diagnose why the update didn't apply so the signer gets a useful message.
+    doc = await db.signer_intakes.find_one({"token": token})
+    if not doc:
+        raise HTTPException(status_code=404, detail="Link not found")
+    if doc.get("status") in ("completed", "used"):
+        raise HTTPException(status_code=400, detail="This intake has already been submitted.")
+    raise HTTPException(status_code=400, detail="This link has expired. Ask your notary for a new one.")
 
 # ---- PDF Export ----
 @api.get("/entries/export/pdf")

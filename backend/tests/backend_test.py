@@ -1,6 +1,7 @@
 """API regression tests for signer intakes, authentication, dashboard, journal and PDF export."""
 import asyncio
 import uuid
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 
 import pytest
@@ -123,6 +124,7 @@ class TestSignerIntakes:
         assert isinstance(token, str) and len(token) >= 20
         assert intake["status"] == "pending"
         assert intake["label"] == label
+        assert intake["notary_name"] == "Matthew Yurksaitis"
         assert datetime.fromisoformat(intake["expires_at"]) > datetime.now(timezone.utc)
 
         try:
@@ -130,6 +132,7 @@ class TestSignerIntakes:
             assert listed.status_code == 200
             matches = [row for row in listed.json() if row["id"] == intake_id]
             assert len(matches) == 1 and matches[0]["label"] == label
+            assert matches[0]["notary_name"] == "Matthew Yurksaitis"
 
             # Deliberately use a brand-new session: public GET/POST must not rely on auth cookies.
             public_client = requests.Session()
@@ -182,6 +185,10 @@ class TestSignerIntakes:
         assert response.status_code == 200
         data = response.json()
         assert data["status"] in ("completed", "used")
+        assert set(data) == {
+            "status", "label", "appointment_note", "notary_name",
+            "commission_number", "state", "submitted_at",
+        }, "Public status response contains fields beyond its explicit safe allowlist"
         assert "data" not in data, "Public status endpoint exposes submitted signer PII"
 
     def test_public_bad_token_is_404_without_auth(self):
@@ -206,8 +213,52 @@ class TestSignerIntakes:
                 timeout=20,
             )
             assert invalid.status_code == 422
+            detail = invalid.json()["detail"]
+            assert {tuple(error["loc"]) for error in detail} == {
+                ("body", "signer_name"), ("body", "id_type"), ("body", "id_number")
+            }
         finally:
             authenticated_client.delete(f"{BASE_URL}/api/intakes/{intake['id']}", timeout=20)
+
+    def test_atomic_concurrent_submit_accepts_only_one_and_never_overwrites(self, authenticated_client):
+        created = authenticated_client.post(
+            f"{BASE_URL}/api/intakes",
+            json={"label": "TEST_Atomic_Submit", "expires_hours": 24},
+            timeout=20,
+        )
+        assert created.status_code == 200
+        intake = created.json()
+        payload_a = {**VALID_SIGNER, "signer_name": "TEST_Atomic Signer A", "id_number": "ATOMIC-A"}
+        payload_b = {**VALID_SIGNER, "signer_name": "TEST_Atomic Signer B", "id_number": "ATOMIC-B"}
+
+        def submit(payload):
+            return requests.post(
+                f"{BASE_URL}/api/public/intake/{intake['token']}", json=payload, timeout=20
+            )
+
+        try:
+            with ThreadPoolExecutor(max_workers=2) as pool:
+                responses = list(pool.map(submit, (payload_a, payload_b)))
+            assert sorted(response.status_code for response in responses) == [200, 400]
+            rejected = next(response for response in responses if response.status_code == 400)
+            assert "already been submitted" in rejected.json()["detail"].lower()
+
+            listed = authenticated_client.get(f"{BASE_URL}/api/intakes", timeout=20)
+            assert listed.status_code == 200
+            persisted = next(row for row in listed.json() if row["id"] == intake["id"])
+            winning_data = persisted["data"]
+            assert winning_data in (payload_a, payload_b)
+
+            third = submit({**VALID_SIGNER, "signer_name": "TEST_Overwrite Attempt", "id_number": "OVERWRITE"})
+            assert third.status_code == 400
+            after_third = authenticated_client.get(f"{BASE_URL}/api/intakes", timeout=20).json()
+            still_persisted = next(row for row in after_third if row["id"] == intake["id"])
+            assert still_persisted["data"] == winning_data
+        finally:
+            deleted = authenticated_client.delete(
+                f"{BASE_URL}/api/intakes/{intake['id']}", timeout=20
+            )
+            assert deleted.status_code == 200
 
     def test_mark_used_unknown_intake_returns_404(self, authenticated_client):
         response = authenticated_client.post(
@@ -221,7 +272,8 @@ class TestSignerIntakes:
     ])
     def test_malformed_intake_id_is_controlled_4xx(self, authenticated_client, method, path):
         response = getattr(authenticated_client, method)(f"{BASE_URL}{path}", timeout=20)
-        assert response.status_code in (400, 404, 422)
+        assert response.status_code == 400
+        assert response.json()["detail"] == "Invalid identifier"
 
 
 class TestRegression:
