@@ -1,9 +1,12 @@
 import { useEffect, useState } from "react";
+import { useAuth } from "@/context/AuthContext";
 import { api } from "@/api";
 import { Card } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { Users, Crown } from "lucide-react";
+import { Users, Crown, UserPlus } from "lucide-react";
+import InviteNotaryDialog from "@/components/InviteNotaryDialog";
 
 const STATUS_STYLE = {
   trial:     "bg-[#FEF9EC] text-[#7A5B00] border-[#F0D28A]",
@@ -13,8 +16,10 @@ const STATUS_STYLE = {
 };
 
 export default function Roster() {
+  const { user } = useAuth();
   const [data, setData] = useState(null);
   const [err, setErr] = useState("");
+  const [inviteOpen, setInviteOpen] = useState(false);
 
   useEffect(() => {
     api.get("/admin/roster")
@@ -39,7 +44,21 @@ export default function Roster() {
             {data.total} notaries using Notarium under Domini's umbrella
           </p>
         </div>
+        <Button
+          onClick={() => setInviteOpen(true)}
+          className="rounded-sm bg-[#DF0D1B] hover:bg-[#B70915] text-white"
+          data-testid="open-invite-btn"
+        >
+          <UserPlus className="w-4 h-4 mr-2" /> Invite Notary
+        </Button>
       </div>
+
+      <InviteNotaryDialog
+        open={inviteOpen}
+        onOpenChange={setInviteOpen}
+        defaultFirm={user?.firm_name || ""}
+        defaultState={user?.state || ""}
+      />
 
       <Card className="border-[#E2E8F0] rounded-sm shadow-none bg-white overflow-hidden">
         <Table>

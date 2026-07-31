@@ -1,0 +1,77 @@
+{
+  "summary": "Backend-only iteration 14 verification completed against the public preview URL. The email-keyed login lockout fix passed exactly: attempts 1-5 returned 401, attempt 6 and a correct password while locked returned 429, cleanup removed the lock, and correct login recovered. Firm-logo CRUD, size/basic MIME rejection, seal regression, and certificate/intake PDFs with and without an embedded logo passed. Invite create, registered-user rejection, owner isolation, public unknown/expired/used states, acceptance, cookie auth, profile prefill, sequential reuse prevention, and owner-only revoke passed. Five defects remain. All 15 prior billing tests passed.",
+  "backend_issues": {
+    "critical": [
+      {
+        "endpoint": "GET /api/invites/{id}",
+        "issue": "The documented authenticated invite-detail endpoint is not implemented; an owner request returns 405 Method Not Allowed.",
+        "priority": "HIGH"
+      },
+      {
+        "endpoint": "PUT /api/auth/firm-logo",
+        "issue": "Image validation trusts only the data:image/ prefix. A data:image/png URL containing plain non-image bytes is accepted with 200 instead of 400. Unsupported image subtypes are likewise not constrained to the stated PNG/JPEG contract.",
+        "priority": "HIGH"
+      },
+      {
+        "endpoint": "POST /api/public/invite/{token}/accept",
+        "issue": "Concurrent acceptance is not atomic. Two simultaneous requests produce 200 and 400 'email already has an account' instead of exactly one 200 and one 410 already-used response.",
+        "priority": "HIGH"
+      },
+      {
+        "endpoint": "OPTIONS /api/auth/me",
+        "issue": "Credentialed CORS remains misconfigured: public preflight returns Access-Control-Allow-Origin: * and does not return Access-Control-Allow-Credentials: true, despite cookie-based auth.",
+        "priority": "HIGH"
+      }
+    ],
+    "minor": [
+      {
+        "endpoint": "GET /api/invites",
+        "issue": "Returns {\"invites\": [...]} rather than the requested top-level JSON array. Ownership isolation inside the wrapped array is correct."
+      }
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_iteration14.py",
+    "/app/backend/tests/test_billing.py",
+    "/app/test_reports/pytest/notarium_iteration14_final.xml",
+    "/app/test_reports/pytest/notarium_billing_iteration14.xml"
+  ],
+  "action_items": [
+    "Implement owner-scoped GET /api/invites/{id} with controlled malformed-ID handling and 404 for non-owners.",
+    "Decode base64 with validation and verify the actual image format/content (PNG or JPEG) before persisting a firm logo.",
+    "Make invite claim/acceptance atomic (conditional used_at claim and transaction/rollback around user/default-type creation), returning 410 to every loser.",
+    "Return the documented top-level array from GET /api/invites, or explicitly update the API contract and consumers if the wrapper is intentional.",
+    "Configure CORS from explicit allowed origins and enable credentials; retest public preflight and cookie auth.",
+    "Use an atomic Mongo increment/update for login_attempts so concurrent failures cannot lose increments even though the corrected identifier now uses email alone."
+  ],
+  "critical_code_review_comments": [
+    "Login lockout now uses the correct shared email identifier, but its find/read followed by $set count is still a lost-update race under concurrent attempts; use find_one_and_update with $inc and atomic lock-time logic.",
+    "Invite acceptance checks used_at, checks users, inserts a user/default types, and only then marks the invite used across separate operations. This explains the reproduced 200/400 race and can leave partial state after failures.",
+    "Firm-logo validation at server.py:1914-1917 checks only prefix and encoded string length; it does not validate base64, decoded byte size, MIME subtype, or actual image format.",
+    "server.py hardcodes allow_origins=['*'] and allow_credentials=False instead of using the configured CORS_ORIGINS value, so secure SameSite=None cookies cannot be used cross-origin as intended.",
+    "server.py is 2,513 lines, far above the 700-line maintainability threshold; split auth/customization, invites, PDFs, billing, journal, and intake routes into focused modules.",
+    "No unique index is created for invites.token at startup; token collisions are unlikely but the public capability token should still be database-enforced unique."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_iteration14.py",
+    "/app/test_reports/pytest/notarium_iteration14.xml",
+    "/app/test_reports/pytest/notarium_iteration14_logo_malformed.xml",
+    "/app/test_reports/pytest/notarium_iteration14_final.xml",
+    "/app/test_reports/pytest/notarium_billing_iteration14.xml",
+    "/app/test_reports/iteration_14.json"
+  ],
+  "success_rate": {
+    "backend": "85% (28/33 final executed tests passed: iteration 14 scope 13/18, prior billing regression 15/15)",
+    "frontend": "Not tested (backend-only request)"
+  },
+  "seed_data_creation": "Created fresh foreign-owner, invite-target, invite-accepted, race-accepted, and expired-trial users; created invites, one journal entry, one intake, temporary logo/seal data, and Stripe test checkout sessions from the billing regression. Mongo test users/resources/invites/brand state/payment rows and Stripe test customers were cleaned up; immutable Stripe sandbox session history remains.",
+  "should_call_test_agent_after_fix": true,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Re-run test_iteration14.py and test_billing.py against REACT_APP_BACKEND_URL. The exact admin lockout sequence is passing and its email:matthew... login_attempts row is deleted in finally before recovery login. Logo embedding was verified by increased PDF image counts for both certificate and intake poster, and both PDFs still passed after logo deletion. Invite list isolation works despite the response-shape mismatch. Sequential invite reuse correctly returns 410; only concurrent acceptance returns 400. No frontend testing was performed.",
+  "rca_of_the_issue": "The missing invite-detail route directly causes 405. list_invites explicitly wraps rows in {invites: out}, contradicting the requested array contract. upload_firm_logo validates only startswith('data:image/') and string length, allowing spoofed bytes. public_invite_accept performs a non-atomic read/check/insert/update sequence, so a competing request can observe unused state and then hit the existing-user branch after the winner inserts. CORS middleware is explicitly configured with wildcard origins and credentials disabled. The login lockout defect from iteration 13 is fixed for sequential public requests by identifier=f'email:{email}'."
+}

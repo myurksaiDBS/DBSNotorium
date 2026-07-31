@@ -8,7 +8,7 @@ import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
 import { Badge } from "@/components/ui/badge";
 import { Checkbox } from "@/components/ui/checkbox";
-import { BellRing, Send, Mail, ListChecks, Lock, Stamp, KeyRound, Upload, Trash2 } from "lucide-react";
+import { BellRing, Send, Mail, ListChecks, Lock, Stamp, KeyRound, Upload, Trash2, ImagePlus } from "lucide-react";
 import { toast } from "sonner";
 
 export default function Settings() {
@@ -26,10 +26,13 @@ export default function Settings() {
   const [testing, setTesting] = useState(false);
   const [checklist, setChecklist] = useState(null);
   const [seal, setSeal] = useState({ has_seal: false, seal_data: null });
+  const [firmLogo, setFirmLogo] = useState({ has_logo: false, firm_logo_data: null });
   const [uploading, setUploading] = useState(false);
+  const [logoUploading, setLogoUploading] = useState(false);
   const [pwd, setPwd] = useState({ current_password: "", new_password: "", confirm: "" });
   const [pwdSaving, setPwdSaving] = useState(false);
   const sealInputRef = useRef(null);
+  const firmLogoInputRef = useRef(null);
 
   const loadStatus = async () => {
     try {
@@ -96,7 +99,7 @@ export default function Settings() {
     } finally { setPwdSaving(false); }
   };
 
-  useEffect(() => { loadStatus(); loadChecklist(); loadSeal(); }, []);
+  useEffect(() => { loadStatus(); loadChecklist(); loadSeal(); loadFirmLogo(); }, []);
 
   const toggleChecklistItem = async (id, done) => {
     // Optimistic update
@@ -330,6 +333,56 @@ export default function Settings() {
           )}
           <input ref={sealInputRef} type="file" accept="image/png,image/jpeg"
             onChange={onSealPick} className="hidden" data-testid="seal-file-input" />
+        </Card>
+
+        <Card className="p-6 border-[#E2E8F0] rounded-sm shadow-none bg-white" data-testid="firm-logo-card">
+          <div className="flex items-start gap-3 mb-4 pb-4 border-b border-[#E2E8F0]">
+            <div className="w-10 h-10 rounded-sm bg-[#EEF2FB] flex items-center justify-center shrink-0">
+              <ImagePlus className="w-5 h-5 text-[#00317A]" />
+            </div>
+            <div>
+              <div className="text-[10px] uppercase tracking-[0.25em] text-[#DF0D1B] mb-1">Firm Branding</div>
+              <div className="font-serif text-xl text-[#00317A]">Firm Logo</div>
+              <p className="text-xs text-[#4B5563] mt-1">
+                Optional. Prints beside the Domini shield on certificates and QR posters. PNG or JPEG, under 500 KB.
+              </p>
+            </div>
+          </div>
+          {firmLogo.has_logo ? (
+            <div className="flex items-center gap-4">
+              <div className="w-32 h-24 border border-[#E2E8F0] rounded-sm p-2 bg-white flex items-center justify-center">
+                <img src={firmLogo.firm_logo_data} alt="Firm logo" className="max-w-full max-h-full object-contain" data-testid="firm-logo-preview" />
+              </div>
+              <div className="flex-1">
+                <div className="text-xs text-[#146334] mb-2">Logo uploaded — appears on new PDF exports.</div>
+                <div className="flex gap-2">
+                  <Button type="button" size="sm" variant="outline"
+                    onClick={() => firmLogoInputRef.current?.click()}
+                    className="rounded-sm border-[#00317A] text-[#00317A] hover:bg-[#00317A] hover:text-white"
+                    data-testid="replace-firm-logo-btn">
+                    <Upload className="w-3.5 h-3.5 mr-1" /> Replace
+                  </Button>
+                  <Button type="button" size="sm" variant="ghost"
+                    onClick={removeFirmLogo}
+                    className="rounded-sm text-[#991B1B] hover:bg-[#FDECEC]"
+                    data-testid="remove-firm-logo-btn">
+                    <Trash2 className="w-3.5 h-3.5 mr-1" /> Remove
+                  </Button>
+                </div>
+              </div>
+            </div>
+          ) : (
+            <Button type="button"
+              onClick={() => firmLogoInputRef.current?.click()}
+              disabled={logoUploading}
+              className="rounded-sm bg-[#00317A] hover:bg-[#00265E] text-white w-full"
+              data-testid="upload-firm-logo-btn">
+              <Upload className="w-4 h-4 mr-2" />
+              {logoUploading ? "Uploading..." : "Upload firm logo"}
+            </Button>
+          )}
+          <input ref={firmLogoInputRef} type="file" accept="image/png,image/jpeg"
+            onChange={onFirmLogoPick} className="hidden" data-testid="firm-logo-file-input" />
         </Card>
 
         <Card className="p-6 border-[#E2E8F0] rounded-sm shadow-none bg-white" data-testid="password-card">

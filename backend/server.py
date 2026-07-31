@@ -241,7 +241,12 @@ async def register(payload: RegisterIn, response: Response):
 @api.post("/auth/login")
 async def login(payload: LoginIn, response: Response, request: Request):
     email = payload.email.lower().strip()
-    identifier = f"{request.client.host}:{email}"
+    # Key lockout on email alone. Behind a proxy, request.client.host can
+    # rotate between internal replicas across attempts, which would split
+    # the counter and let brute-force pass. Locking the email itself makes
+    # the throttle reliable at the cost of a self-DoS window per account —
+    # acceptable since the user can wait 15 min or reset their password.
+    identifier = f"email:{email}"
     now = datetime.now(timezone.utc)
     attempt_doc = await db.login_attempts.find_one({"identifier": identifier})
     if attempt_doc and attempt_doc.get("count", 0) >= 5:
@@ -1018,6 +1023,20 @@ def _draw_domini_stamp(canvas, page_w, page_h, doc_page: int):
                 page_w - 0.4 * inch, page_h - 0.28 * inch)
     canvas.restoreState()
 
+def _firm_logo_flowable(notary: dict, height_in: float = 0.55):
+    """Return a small firm logo Image flowable if the user has uploaded one."""
+    data = notary.get("firm_logo_data") or ""
+    if not (data.startswith("data:image/") and "base64," in data):
+        return None
+    try:
+        raw = base64.b64decode(data.split("base64,", 1)[1])
+        img = RLImage(io.BytesIO(raw), height=height_in * inch, width=height_in * inch * 2.2, kind='proportional')
+        img.hAlign = 'RIGHT'
+        return img
+    except Exception:
+        return None
+
+
 def _render_certificate_pdf(entry: dict, notary: dict) -> bytes:
     """Single-page letter portrait branded certificate for one entry."""
     from reportlab.lib.pagesizes import letter as _letter
@@ -1056,7 +1075,24 @@ def _render_certificate_pdf(entry: dict, notary: dict) -> bytes:
 
     elems = []
     elems.append(Paragraph("CERTIFICATE OF NOTARIAL ACT", eyebrow))
-    elems.append(Paragraph(entry.get("notarization_type") or "Notarial Act", title_style))
+    # Co-branded firm logo — sits under the eyebrow, right of the title.
+    firm_logo = _firm_logo_flowable(notary, height_in=0.42)
+    if firm_logo:
+        header_row = Table(
+            [[Paragraph(entry.get("notarization_type") or "Notarial Act", title_style), firm_logo]],
+            colWidths=[4.9 * inch, 1.9 * inch],
+        )
+        header_row.setStyle(TableStyle([
+            ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+            ('ALIGN', (1, 0), (1, 0), 'RIGHT'),
+            ('LEFTPADDING', (0, 0), (-1, -1), 0),
+            ('RIGHTPADDING', (0, 0), (-1, -1), 0),
+            ('TOPPADDING', (0, 0), (-1, -1), 0),
+            ('BOTTOMPADDING', (0, 0), (-1, -1), 6),
+        ]))
+        elems.append(header_row)
+    else:
+        elems.append(Paragraph(entry.get("notarization_type") or "Notarial Act", title_style))
     # Cert meta bar
     meta = Table(
         [[
@@ -1612,6 +1648,15 @@ def _render_intake_poster_pdf(intake: dict, notary: dict, url: str,
 
     elems = []
     elems.append(Paragraph("SIGNER INTAKE", eyebrow))
+    firm_logo = _firm_logo_flowable(notary, height_in=0.5)
+    if firm_logo:
+        firm_row = Table([[firm_logo]], colWidths=[6.5 * inch])
+        firm_row.setStyle(TableStyle([
+            ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
+            ('TOPPADDING', (0, 0), (-1, -1), 0),
+            ('BOTTOMPADDING', (0, 0), (-1, -1), 8),
+        ]))
+        elems.append(firm_row)
     elems.append(Paragraph(esc(hl_text), headline))
     elems.append(Paragraph(subtitle, sub))
 
@@ -1857,6 +1902,249 @@ async def get_seal(user=Depends(get_current_user)):
         "seal_data": (doc or {}).get("seal_data"),
         "updated_at": (doc or {}).get("seal_updated_at"),
     }
+
+
+# ---- Firm Logo (co-branded PDFs) ----
+class FirmLogoIn(BaseModel):
+    firm_logo_data: str
+
+
+@api.put("/auth/firm-logo")
+async def upload_firm_logo(payload: FirmLogoIn, user=Depends(get_current_user)):
+    if not payload.firm_logo_data.startswith("data:image/"):
+        raise HTTPException(status_code=400, detail="Firm logo must be a PNG or JPEG image (data URL).")
+    if len(payload.firm_logo_data) > 700_000:
+        raise HTTPException(status_code=400, detail="Firm logo is too large. Try under 500 KB.")
+    await db.users.update_one(
+        {"_id": ObjectId(user["_id"])},
+        {"$set": {"firm_logo_data": payload.firm_logo_data,
+                  "firm_logo_updated_at": datetime.now(timezone.utc).isoformat()}})
+    return {"ok": True}
+
+
+@api.delete("/auth/firm-logo")
+async def delete_firm_logo(user=Depends(get_current_user)):
+    await db.users.update_one(
+        {"_id": ObjectId(user["_id"])},
+        {"$unset": {"firm_logo_data": "", "firm_logo_updated_at": ""}})
+    return {"ok": True}
+
+
+@api.get("/auth/firm-logo")
+async def get_firm_logo(user=Depends(get_current_user)):
+    doc = await db.users.find_one({"_id": ObjectId(user["_id"])},
+                                  {"firm_logo_data": 1, "firm_logo_updated_at": 1})
+    return {
+        "has_logo": bool(doc and doc.get("firm_logo_data")),
+        "firm_logo_data": (doc or {}).get("firm_logo_data"),
+        "updated_at": (doc or {}).get("firm_logo_updated_at"),
+    }
+
+
+# ---- Invitations (invite a colleague under the same firm) ----
+class InviteCreateIn(BaseModel):
+    email: EmailStr
+    firm_name: Optional[str] = None
+    state: Optional[str] = None
+    message: Optional[str] = None
+
+
+def _render_invite_email(inviter_name: str, firm_name: str, invite_url: str,
+                          personal_note: str, app_name: str) -> tuple[str, str]:
+    subject = f"You're invited to Notarium — join {firm_name or 'the team'}"
+    note_html = ""
+    if personal_note:
+        note_html = (f'<tr><td style="padding:0 32px 16px 32px;">'
+                     f'<div style="border-left:3px solid #DF0D1B;padding:8px 14px;color:#4B5563;'
+                     f'background:#F4F7F9;font-style:italic;">{_html.escape(personal_note)}</div></td></tr>')
+    firm_line = f"<b>{_html.escape(firm_name)}</b> is inviting you to " if firm_name else "You're invited to "
+    html = f"""<!doctype html><html><body style="margin:0;padding:32px;background:#F4F7F9;font-family:Georgia,'Times New Roman',serif;">
+<table role="presentation" width="580" cellpadding="0" cellspacing="0" align="center"
+       style="background:#ffffff;border:1px solid #E2E8F0;border-radius:2px;">
+  <tr><td style="background:#00317A;color:#ffffff;padding:20px 32px;">
+      <div style="font-size:11px;letter-spacing:0.25em;color:#F0B429;text-transform:uppercase;">Notarium</div>
+      <div style="font-size:22px;margin-top:4px;">You're invited</div>
+  </td></tr>
+  <tr><td style="padding:28px 32px 8px 32px;color:#111827;font-size:15px;line-height:1.6;">
+      Hi there,<br/><br/>
+      {firm_line}join Notarium — the notary journal, signer intake &amp; certificate platform from
+      Domini Business Services. <b>{_html.escape(inviter_name)}</b> set this up for you.
+  </td></tr>
+  {note_html}
+  <tr><td style="padding:8px 32px 24px 32px;">
+      <a href="{invite_url}" style="display:inline-block;background:#DF0D1B;color:#ffffff;
+             padding:12px 20px;text-decoration:none;font-family:Helvetica,Arial,sans-serif;
+             font-size:14px;letter-spacing:0.05em;text-transform:uppercase;border-radius:2px;">
+         Accept invitation
+      </a>
+      <div style="font-family:'SFMono-Regular',Menlo,Courier,monospace;font-size:11px;color:#4B5563;margin-top:14px;word-break:break-all;">
+         Or paste this link in a browser:<br/>{_html.escape(invite_url)}
+      </div>
+  </td></tr>
+  <tr><td style="padding:12px 32px 24px 32px;color:#4B5563;font-size:12px;border-top:1px solid #E2E8F0;">
+      This invitation expires in 7 days. If you weren't expecting it, you can safely ignore this email.<br/>
+      — Powered by Notarium · {_html.escape(app_name)}
+  </td></tr>
+</table></body></html>"""
+    return subject, html
+
+
+@api.post("/invites")
+async def create_invite(payload: InviteCreateIn, user=Depends(get_current_user)):
+    email = payload.email.lower().strip()
+    # Do not re-invite an already registered account
+    if await db.users.find_one({"email": email}):
+        raise HTTPException(status_code=400, detail="That email already has a Notarium account.")
+
+    firm = (payload.firm_name or user.get("firm_name") or "").strip() or None
+    state = (payload.state or user.get("state") or "").strip() or None
+    token = _secrets.token_urlsafe(24)
+    now = datetime.now(timezone.utc)
+    expires = now + timedelta(days=7)
+    doc = {
+        "token": token,
+        "email": email,
+        "firm_name": firm,
+        "state": state,
+        "invited_by_user_id": user["_id"],
+        "invited_by_name": user.get("name"),
+        "message": payload.message,
+        "created_at": now.isoformat(),
+        "expires_at": expires.isoformat(),
+        "used_at": None,
+        "email_status": "pending",
+    }
+    await db.invites.insert_one(doc)
+
+    app_url = os.environ.get("ALERT_APP_URL", "").rstrip("/")
+    invite_url = f"{app_url}/invite/{token}"
+    subject, html = _render_invite_email(
+        user.get("name", "A colleague"),
+        firm or "",
+        invite_url,
+        payload.message or "",
+        os.environ.get("EMAIL_FROM_NAME", "Domini Business Services"),
+    )
+    email_id, error = await _send_email(email, subject, html, reply_to=user.get("email"))
+    await db.invites.update_one(
+        {"token": token},
+        {"$set": {"email_status": "sent" if email_id else "failed",
+                  "email_error": error,
+                  "email_id": email_id,
+                  "email_sent_at": datetime.now(timezone.utc).isoformat()}},
+    )
+    return {
+        "token": token,
+        "invite_url": invite_url,
+        "email": email,
+        "firm_name": firm,
+        "expires_at": expires.isoformat(),
+        "email_sent": bool(email_id),
+        "email_error": error,
+    }
+
+
+@api.get("/invites")
+async def list_invites(user=Depends(get_current_user)):
+    docs = await db.invites.find({"invited_by_user_id": user["_id"]}) \
+        .sort("created_at", -1).to_list(200)
+    out = []
+    for d in docs:
+        out.append({
+            "id": str(d["_id"]),
+            "token": d["token"],
+            "email": d["email"],
+            "firm_name": d.get("firm_name"),
+            "created_at": d.get("created_at"),
+            "expires_at": d.get("expires_at"),
+            "used_at": d.get("used_at"),
+            "email_status": d.get("email_status"),
+            "email_error": d.get("email_error"),
+        })
+    return {"invites": out}
+
+
+@api.delete("/invites/{invite_id}")
+async def revoke_invite(invite_id: str, user=Depends(get_current_user)):
+    result = await db.invites.delete_one(
+        {"_id": _to_oid(invite_id), "invited_by_user_id": user["_id"]})
+    if result.deleted_count == 0:
+        raise HTTPException(status_code=404, detail="Invite not found")
+    return {"ok": True}
+
+
+@api.get("/public/invite/{token}")
+async def public_invite_info(token: str):
+    inv = await db.invites.find_one({"token": token})
+    if not inv:
+        raise HTTPException(status_code=404, detail="Invitation not found")
+    if inv.get("used_at"):
+        raise HTTPException(status_code=410, detail="This invitation has already been accepted.")
+    try:
+        if datetime.fromisoformat(inv["expires_at"]) < datetime.now(timezone.utc):
+            raise HTTPException(status_code=410, detail="This invitation has expired.")
+    except (ValueError, TypeError):
+        pass
+    return {
+        "email": inv.get("email"),
+        "firm_name": inv.get("firm_name"),
+        "state": inv.get("state"),
+        "invited_by_name": inv.get("invited_by_name"),
+    }
+
+
+class InviteAcceptIn(BaseModel):
+    password: str
+    name: str
+
+
+@api.post("/public/invite/{token}/accept")
+async def public_invite_accept(token: str, payload: InviteAcceptIn, response: Response):
+    inv = await db.invites.find_one({"token": token})
+    if not inv:
+        raise HTTPException(status_code=404, detail="Invitation not found")
+    if inv.get("used_at"):
+        raise HTTPException(status_code=410, detail="This invitation has already been accepted.")
+    try:
+        if datetime.fromisoformat(inv["expires_at"]) < datetime.now(timezone.utc):
+            raise HTTPException(status_code=410, detail="This invitation has expired.")
+    except (ValueError, TypeError):
+        pass
+    if len(payload.password) < 8:
+        raise HTTPException(status_code=400, detail="Password must be at least 8 characters.")
+    email = inv["email"]
+    if await db.users.find_one({"email": email}):
+        raise HTTPException(status_code=400, detail="That email already has a Notarium account.")
+    user_doc = {
+        "email": email,
+        "password_hash": hash_password(payload.password),
+        "name": payload.name,
+        "role": "notary",
+        "commission_number": None,
+        "commission_expires": None,
+        "state": inv.get("state"),
+        "firm_name": inv.get("firm_name"),
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "invited_by_user_id": inv.get("invited_by_user_id"),
+    }
+    result = await db.users.insert_one(user_doc)
+    uid = str(result.inserted_id)
+    for t in DEFAULT_DOC_TYPES:
+        await db.document_types.insert_one({
+            **t, "user_id": uid,
+            "created_at": datetime.now(timezone.utc).isoformat(),
+        })
+    await db.invites.update_one(
+        {"token": token},
+        {"$set": {"used_at": datetime.now(timezone.utc).isoformat(),
+                  "accepted_user_id": uid}},
+    )
+    access = create_access_token(uid, email)
+    refresh = create_refresh_token(uid)
+    set_auth_cookies(response, access, refresh)
+    return {"id": uid, "email": email, "name": payload.name, "role": "notary",
+            "firm_name": inv.get("firm_name")}
+
 
 # ---- Clients ----
 @api.get("/clients")

@@ -13,6 +13,7 @@ import Intakes from "@/pages/Intakes";
 import SignerIntake from "@/pages/SignerIntake";
 import Roster from "@/pages/Roster";
 import Billing from "@/pages/Billing";
+import InviteAccept from "@/pages/InviteAccept";
 
 function ProtectedRoute({ children }) {
   const { user, checked } = useAuth();
@@ -41,6 +42,7 @@ export default function App() {
         <BrowserRouter>
           <Routes>
             <Route path="/intake/:token" element={<SignerIntake />} />
+            <Route path="/invite/:token" element={<InviteAccept />} />
             <Route path="/login" element={<PublicOnly><Login /></PublicOnly>} />
             <Route path="/" element={<ProtectedRoute><Layout /></ProtectedRoute>}>
               <Route index element={<Dashboard />} />
