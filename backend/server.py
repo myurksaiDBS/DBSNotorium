@@ -324,6 +324,48 @@ async def update_profile(payload: ProfileIn, user=Depends(get_current_user)):
         "has_seal": bool(doc.get("seal_data")),
     }
 
+# ---- Admin Roster (super-admin only) ----
+def _require_admin(user: dict):
+    if user.get("role") != "admin":
+        raise HTTPException(status_code=403, detail="Admin only")
+
+@api.get("/admin/roster")
+async def admin_roster(user=Depends(get_current_user)):
+    _require_admin(user)
+    users = await db.users.find({}).sort("created_at", -1).to_list(1000)
+    rows = []
+    for u in users:
+        uid = str(u["_id"])
+        entry_count = await db.entries.count_documents({"user_id": uid})
+        client_count = await db.clients.count_documents({"user_id": uid})
+        last_entry = await db.entries.find_one({"user_id": uid}, sort=[("entry_date", -1)])
+        rows.append({
+            "id": uid,
+            "email": u.get("email"),
+            "name": u.get("name"),
+            "firm_name": u.get("firm_name"),
+            "role": u.get("role", "notary"),
+            "state": u.get("state"),
+            "commission_expires": u.get("commission_expires"),
+            "created_at": u.get("created_at"),
+            "entry_count": entry_count,
+            "client_count": client_count,
+            "last_activity": (last_entry or {}).get("entry_date"),
+            "subscription_status": u.get("subscription_status", "trial"),
+            "subscription_plan": u.get("subscription_plan", "Starter"),
+        })
+    return {"total": len(rows), "notaries": rows}
+
+@api.get("/billing/status")
+async def billing_status(user=Depends(get_current_user)):
+    """Placeholder billing endpoint. Stripe subscription will be added next iteration."""
+    return {
+        "provider": "not_configured",
+        "status": user.get("subscription_status", "trial"),
+        "plan": user.get("subscription_plan", "Starter"),
+        "note": "Stripe subscriptions will be enabled in the next iteration.",
+    }
+
 # ---- Commission Alerts (Resend email) ----
 EMAIL_BASE_URL = "https://integrations.emergentagent.com"
 # Ordered smallest → largest so we pick the tightest still-valid threshold.

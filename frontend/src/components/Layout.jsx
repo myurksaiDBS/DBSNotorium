@@ -1,11 +1,11 @@
 import { NavLink, Outlet, useNavigate } from "react-router-dom";
 import { useAuth } from "@/context/AuthContext";
 import {
-  LayoutDashboard, BookOpen, Users, FileType2, Settings, LogOut, Link2,
+  LayoutDashboard, BookOpen, Users, FileType2, Settings, LogOut, Link2, Crown,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 
-const nav = [
+const baseNav = [
   { to: "/", label: "Dashboard", icon: LayoutDashboard, end: true, testid: "nav-dashboard" },
   { to: "/journal", label: "Journal", icon: BookOpen, testid: "nav-journal" },
   { to: "/intakes", label: "Intake Links", icon: Link2, testid: "nav-intakes" },
@@ -14,10 +14,13 @@ const nav = [
   { to: "/settings", label: "Commission", icon: Settings, testid: "nav-settings" },
 ];
 
+const adminNav = { to: "/admin/roster", label: "Roster", icon: Crown, testid: "nav-roster" };
+
 export default function Layout() {
   const { user, logout } = useAuth();
   const navigate = useNavigate();
   const firm = user?.firm_name?.trim();
+  const nav = user?.role === "admin" ? [...baseNav, adminNav] : baseNav;
 
   return (
     <div className="min-h-screen flex bg-[#F4F7F9]">

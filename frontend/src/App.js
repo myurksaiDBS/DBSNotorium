@@ -11,6 +11,7 @@ import DocumentTypes from "@/pages/DocumentTypes";
 import Settings from "@/pages/Settings";
 import Intakes from "@/pages/Intakes";
 import SignerIntake from "@/pages/SignerIntake";
+import Roster from "@/pages/Roster";
 
 function ProtectedRoute({ children }) {
   const { user, checked } = useAuth();
@@ -47,6 +48,7 @@ export default function App() {
               <Route path="intakes" element={<Intakes />} />
               <Route path="document-types" element={<DocumentTypes />} />
               <Route path="settings" element={<Settings />} />
+              <Route path="admin/roster" element={<Roster />} />
             </Route>
             <Route path="*" element={<Navigate to="/" replace />} />
           </Routes>
