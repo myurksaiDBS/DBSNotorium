@@ -10,6 +10,7 @@ import base64
 import asyncio
 import hmac
 import httpx
+import html as _html
 from datetime import datetime, timezone, timedelta, date
 from typing import List, Optional, Annotated
 
@@ -656,6 +657,9 @@ def _draw_domini_stamp(canvas, page_w, page_h, doc_page: int):
 def _render_certificate_pdf(entry: dict, notary: dict) -> bytes:
     """Single-page letter portrait branded certificate for one entry."""
     from reportlab.lib.pagesizes import letter as _letter
+    # ReportLab's Paragraph parses a mini-HTML dialect: unescaped < > & from user
+    # input silently drops content. Escape everything that flows into Paragraph.
+    esc = lambda v: _html.escape(str(v)) if v is not None else ""
     buf = io.BytesIO()
     page_w, page_h = _letter
 
@@ -714,15 +718,16 @@ def _render_certificate_pdf(entry: dict, notary: dict) -> bytes:
     doc_desc = entry.get("document_type", "")
     if entry.get("document_description"):
         doc_desc += f" — {entry.get('document_description')}"
-    intro = (f"This document certifies that on <b>{date_str}</b>, "
-             f"<b>{notary.get('name', 'the undersigned Notary Public')}</b> witnessed "
-             f"the <b>{entry.get('notarization_type', 'notarial act')}</b> described below.")
+    intro = (f"This document certifies that on <b>{esc(date_str)}</b>, "
+             f"<b>{esc(notary.get('name', 'the undersigned Notary Public'))}</b> witnessed "
+             f"the <b>{esc(entry.get('notarization_type', 'notarial act'))}</b> described below.")
     elems.append(Paragraph(intro, body))
 
-    # Info grid
+    # Info grid — every value is escaped before entering Paragraph
     def cell(l, v, is_mono=False):
         return [Paragraph(l.upper(), label),
-                Paragraph(v or "—", mono if is_mono else value)]
+                Paragraph(esc(v) if v not in (None, "") else "—",
+                          mono if is_mono else value)]
 
     info_rows = [
         [cell("Signer Name", entry.get("signer_name", ""))[0],
@@ -798,12 +803,12 @@ def _render_certificate_pdf(entry: dict, notary: dict) -> bytes:
     exp = notary.get("commission_expires") or ""
     exp_str = exp[:10] if exp else "—"
     notary_html = (
-        f"<b>Notary Public:</b> {notary.get('name', '—')}<br/>"
-        f"<b>Commission No.:</b> {notary.get('commission_number') or '—'} "
+        f"<b>Notary Public:</b> {esc(notary.get('name', '—'))}<br/>"
+        f"<b>Commission No.:</b> {esc(notary.get('commission_number') or '—')} "
         f"&nbsp;&nbsp;·&nbsp;&nbsp; "
-        f"<b>State:</b> {notary.get('state') or '—'} "
+        f"<b>State:</b> {esc(notary.get('state') or '—')} "
         f"&nbsp;&nbsp;·&nbsp;&nbsp; "
-        f"<b>Commission Expires:</b> {exp_str}"
+        f"<b>Commission Expires:</b> {esc(exp_str)}"
     )
     notary_para = ParagraphStyle('nota', parent=value, fontSize=9.5, leading=14,
                                  textColor=colors.HexColor("#111827"))
@@ -896,9 +901,18 @@ async def email_certificate(entry_id: str, payload: CertificateEmailIn,
         doc_desc += f" — {doc.get('document_description')}"
     signer = doc.get("signer_name") or "there"
     custom_note = (payload.message or "").strip()
+    # Escape every user- or DB-supplied value before it enters the HTML body.
+    esc = _html.escape
+    signer_e = esc(signer)
+    doc_desc_e = esc(doc_desc) if doc_desc else "the document you presented"
+    date_e = esc(date_str)
+    notary_name_e = esc(user.get('name', 'Your notary'))
+    notary_comm_e = esc(user.get('commission_number') or '—')
+    notary_state_e = esc(user.get('state') or '—')
+    cert_id_e = esc(str(doc['_id'])[-8:].upper())
     custom_html = (f'<div style="padding:12px 14px;background:#F4F7F9;border-left:3px solid #DF0D1B;'
-                   f'font-size:13px;color:#111827;margin:16px 0;">'
-                   f'{custom_note}</div>') if custom_note else ""
+                   f'font-size:13px;color:#111827;margin:16px 0;white-space:pre-wrap;">'
+                   f'{esc(custom_note)}</div>') if custom_note else ""
     subject = f"Your notarization certificate — {date_str}"
     html = f"""<!doctype html>
 <html><body style="margin:0;padding:0;background:#F4F7F9;font-family:Helvetica,Arial,sans-serif;color:#111827;">
@@ -916,10 +930,10 @@ async def email_certificate(entry_id: str, payload: CertificateEmailIn,
         <td style="padding:32px 28px 8px;">
           <div style="font-size:10px;letter-spacing:2.5px;text-transform:uppercase;color:#DF0D1B;margin-bottom:8px;">Certificate of Notarial Act</div>
           <h1 style="font-family:Georgia,'Times New Roman',serif;font-size:24px;color:#00317A;margin:0 0 12px;">Your notarization is on record</h1>
-          <p style="font-size:14px;line-height:1.6;color:#4B5563;margin:0 0 18px;">Hi {signer},</p>
+          <p style="font-size:14px;line-height:1.6;color:#4B5563;margin:0 0 18px;">Hi {signer_e},</p>
           <p style="font-size:14px;line-height:1.6;color:#111827;margin:0 0 8px;">
-            {user.get('name','Your notary')} has completed the notarial act on <b>{date_str}</b>
-            for <b>{doc_desc or 'the document you presented'}</b>.
+            {notary_name_e} has completed the notarial act on <b>{date_e}</b>
+            for <b>{doc_desc_e}</b>.
           </p>
           <p style="font-size:14px;line-height:1.6;color:#111827;margin:0 0 22px;">
             Your personal, single-page branded certificate is ready to view and save below.
@@ -933,10 +947,10 @@ async def email_certificate(entry_id: str, payload: CertificateEmailIn,
       </tr>
       <tr>
         <td style="padding:20px 28px;border-top:1px solid #E2E8F0;background:#F8FAFC;font-family:'Courier New',monospace;font-size:11px;color:#4B5563;">
-          Certificate No. <span style="color:#111827;">NOT-{str(doc['_id'])[-8:].upper()}</span><br/>
-          Notary: <span style="color:#111827;">{user.get('name','—')}</span> ·
-          Commission: <span style="color:#111827;">{user.get('commission_number') or '—'}</span> ·
-          {user.get('state') or '—'}
+          Certificate No. <span style="color:#111827;">NOT-{cert_id_e}</span><br/>
+          Notary: <span style="color:#111827;">{notary_name_e}</span> ·
+          Commission: <span style="color:#111827;">{notary_comm_e}</span> ·
+          {notary_state_e}
         </td>
       </tr>
       <tr>

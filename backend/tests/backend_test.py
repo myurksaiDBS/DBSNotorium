@@ -851,6 +851,7 @@ class TestRegression:
             assert "TEST-<ID>&-0726" in text
         finally:
             deleted = authenticated_client.delete(f"{BASE_URL}/api/entries/{entry_id}", timeout=20)
+            _cleanup_iteration7_certificate_clients()
             assert deleted.status_code == 200
 
 
@@ -899,3 +900,185 @@ class TestRegression:
         assert authenticated_client.get(
             f"{BASE_URL}/api/entries/{entry['id']}", timeout=20
         ).status_code == 404
+
+
+
+# Iteration 7: certificate output encoding, atomic token creation, alert ordering, and branded PDF regression.
+def _cleanup_iteration7_certificate_clients():
+    async def operation(database):
+        return await database.clients.delete_many({
+            "name": {"$regex": r"^TEST Alice <Signer> & Bob"}
+        })
+
+    return _db_call(operation)
+
+
+class TestEntryCertificateFixesIteration7:
+    """Focused verification of the four fixes requested after iteration 6."""
+
+    @staticmethod
+    def _entry_payload(label):
+        return {
+            "entry_date": datetime.now(timezone.utc).isoformat(),
+            "notarization_type": "Acknowledgment",
+            "document_type": "Deed",
+            "document_description": "House at <123 Main St> & Co",
+            "signer_name": "TEST Alice <Signer> & Bob",
+            "signer_address": "123 QA Avenue",
+            "signer_phone": "",
+            "signer_email": "matthew.yurksaitis@dominibusservices.com",
+            "id_type": "State ID",
+            "id_number": "TEST-<ID>&-0726",
+            "id_expiration": "2029-07-31",
+            "id_issued_by": "PA",
+            "witness_name": "",
+            "fee": 2.50,
+            "notes": "TEST iteration 7 certificate verification",
+            "signature_data": "",
+        }
+
+    def test_pdf_preserves_literal_markup_and_branding(self, authenticated_client):
+        payload = self._entry_payload("PDF")
+        created = authenticated_client.post(f"{BASE_URL}/api/entries", json=payload, timeout=20)
+        assert created.status_code == 200, created.text
+        entry_id = created.json()["id"]
+        try:
+            response = authenticated_client.get(
+                f"{BASE_URL}/api/entries/{entry_id}/certificate.pdf", timeout=30
+            )
+            assert response.status_code == 200, response.text
+            assert response.headers["content-type"].startswith("application/pdf")
+            print(f"Iteration 7 certificate PDF size: {len(response.content)} bytes")
+            assert 38_000 <= len(response.content) <= 42_000, len(response.content)
+            pdf = fitz.open(stream=response.content, filetype="pdf")
+            assert pdf.page_count == 1
+            page = pdf[0]
+            assert round(page.rect.width) == 612 and round(page.rect.height) == 792
+            text = page.get_text()
+            for literal in (
+                payload["signer_name"], payload["id_number"], payload["document_description"],
+                "NOTARY ATTESTATION", "A Division of YFI Enterprises, LLC",
+            ):
+                assert literal in text, f"PDF did not preserve required text: {literal!r}\n{text}"
+            assert len(page.get_images(full=True)) >= 1, "Domini shield watermark/image missing"
+            colors_found = [
+                color
+                for drawing in page.get_drawings()
+                for color in (drawing.get("color"), drawing.get("fill"))
+                if color
+            ]
+            assert any(sum(abs(c[i] - (0.875, 0.051, 0.106)[i]) for i in range(3)) < 0.03
+                       for c in colors_found), "Red top rule missing"
+            assert any(sum(abs(c[i] - (0.0, 0.192, 0.478)[i]) for i in range(3)) < 0.03
+                       for c in colors_found), "Navy attestation block missing"
+        finally:
+            deleted = authenticated_client.delete(f"{BASE_URL}/api/entries/{entry_id}", timeout=20)
+            _cleanup_iteration7_certificate_clients()
+            assert deleted.status_code == 200
+
+    def test_certificate_email_html_escapes_all_interpolated_values(
+            self, authenticated_client, credentials, monkeypatch):
+        payload = self._entry_payload("EMAIL<script>signer</script>")
+        payload["document_type"] = "Deed <script>doctype</script>"
+        created = authenticated_client.post(f"{BASE_URL}/api/entries", json=payload, timeout=20)
+        assert created.status_code == 200, created.text
+        entry_id = created.json()["id"]
+        captured = {}
+
+        async def capture_email(to_email, subject, html, reply_to=None):
+            captured.update(to=to_email, subject=subject, html=html, reply_to=reply_to)
+            return "TEST_FAKE_EMAIL_ID", None
+
+        import server
+        monkeypatch.setattr(server, "_send_email", capture_email)
+        admin = _get_admin(credentials["email"])
+        user = {
+            **admin,
+            "_id": str(admin["_id"]),
+            "name": "Notary <script>name</script> & Co",
+            "commission_number": "COMM-<script>number</script>&",
+            "state": "PA<script>state</script>&",
+        }
+        note = "Personal <script>alert(1)</script> & <b>bold</b>"
+        try:
+            result = asyncio.run(server.email_certificate(
+                entry_id,
+                server.CertificateEmailIn(to=credentials["email"], message=note),
+                user,
+            ))
+            assert result["ok"] is True
+            html = captured["html"]
+            assert "<script>" not in html and "</script>" not in html
+            for escaped_fragment in (
+                "TEST Alice &lt;Signer&gt; &amp; Bob",
+                "Deed &lt;script&gt;doctype&lt;/script&gt; — House at &lt;123 Main St&gt; &amp; Co",
+                "&lt;script&gt;alert(1)&lt;/script&gt; &amp; &lt;b&gt;bold&lt;/b&gt;",
+                "Notary &lt;script&gt;name&lt;/script&gt; &amp; Co",
+                "COMM-&lt;script&gt;number&lt;/script&gt;&amp;",
+                "PA&lt;script&gt;state&lt;/script&gt;&amp;",
+            ):
+                assert escaped_fragment in html, f"Missing escaped email value: {escaped_fragment}"
+        finally:
+            deleted = authenticated_client.delete(f"{BASE_URL}/api/entries/{entry_id}", timeout=20)
+            _cleanup_iteration7_certificate_clients()
+            assert deleted.status_code == 200
+
+    def test_parallel_first_email_calls_share_one_persisted_token(
+            self, authenticated_client, credentials):
+        payload = self._entry_payload("RACE")
+        created = authenticated_client.post(f"{BASE_URL}/api/entries", json=payload, timeout=20)
+        assert created.status_code == 200, created.text
+        entry_id = created.json()["id"]
+        endpoint = f"{BASE_URL}/api/entries/{entry_id}/email-certificate"
+        cookies = authenticated_client.cookies.get_dict()
+
+        def send(index):
+            return requests.post(
+                endpoint,
+                cookies=cookies,
+                json={
+                    "to": credentials["email"],
+                    "message": f"TEST iteration 7 parallel token request {index}",
+                },
+                timeout=45,
+            )
+
+        try:
+            with ThreadPoolExecutor(max_workers=2) as pool:
+                responses = list(pool.map(send, (1, 2)))
+            assert [response.status_code for response in responses] == [200, 200], [
+                response.text for response in responses
+            ]
+            bodies = [response.json() for response in responses]
+            tokens = [body["certificate_url"].rsplit("/", 1)[-1] for body in bodies]
+            assert tokens[0] == tokens[1], f"Parallel callers received different tokens: {tokens}"
+
+            async def fetch(database):
+                return await database.entries.find_one({"_id": ObjectId(entry_id)})
+
+            persisted = _db_call(fetch)
+            assert persisted["certificate_token"] == tokens[0]
+            assert all(body["sent_to"] == credentials["email"] for body in bodies)
+            assert all(isinstance(body["email_id"], str) and body["email_id"] for body in bodies)
+        finally:
+            deleted = authenticated_client.delete(f"{BASE_URL}/api/entries/{entry_id}", timeout=20)
+            _cleanup_iteration7_certificate_clients()
+            assert deleted.status_code == 200
+
+    def test_alert_status_is_chronological_without_changing_bucket_order(
+            self, authenticated_client, credentials, isolated_commission_state):
+        import server
+        assert server.ALERT_BUCKETS == [0, 1, 7, 14, 30, 60]
+        expiry = (datetime.now(timezone.utc).date() + timedelta(days=45)).isoformat()
+        _update_admin(credentials["email"], set_values={
+            "commission_expires": expiry,
+            "alerts_enabled": True,
+        })
+        response = authenticated_client.get(f"{BASE_URL}/api/alerts/status", timeout=20)
+        assert response.status_code == 200, response.text
+        data = response.json()
+        assert data["days_left"] == 45
+        assert [item["days_out"] for item in data["upcoming_alerts"]] == [30, 14, 7, 1, 0]
+        assert [item["on"] for item in data["upcoming_alerts"]] == sorted(
+            item["on"] for item in data["upcoming_alerts"]
+        )

@@ -1,0 +1,54 @@
+{
+  "summary": "Re-tested the four Entry Certificate fixes against the public API and local rendering/email method. PDF literal escaping and email HTML escaping passed, including one-page branding regression. Two fixes are not present/effective: parallel first sends returned different certificate tokens, and upcoming_alerts remains reverse chronological. Both parallel real email sends themselves succeeded.",
+  "backend_issues": {
+    "critical": [
+      {
+        "endpoint": "POST /api/entries/{id}/email-certificate",
+        "issue": "Atomic token creation still fails. Two simultaneous first sends both returned 200 but produced different certificate_token values ('HpchMj1DaJNZa05GOvN3hdYUFyg' and 'UI_kbywY194TKHAuSeQj29C_iic'). Because only one token can remain persisted, one delivered certificate URL becomes invalid.",
+        "priority": "HIGH"
+      }
+    ],
+    "minor": [
+      {
+        "endpoint": "GET /api/alerts/status",
+        "issue": "For a commission 45 days out, upcoming_alerts is still [0, 1, 7, 14, 30] instead of chronological [30, 14, 7, 1, 0]. ALERT_BUCKETS itself correctly remains ascending."
+      }
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/backend_test.py",
+    "/app/test_reports/pytest/certificate_fixes_iteration7.xml",
+    "/app/test_reports/pytest/certificate_escaping_iteration7.xml",
+    "/app/test_reports/pytest/certificate_email_html_iteration7.xml",
+    "/app/test_reports/pytest/certificate_pdf_final_iteration7.xml"
+  ],
+  "action_items": [
+    "Replace _get_entry_certificate_token's read-then-unconditional-update with a conditional find_one_and_update; if a concurrent caller loses the update, refetch and return the winner's persisted token.",
+    "Sort the alerts_status response's upcoming_alerts by days_out descending without changing ascending ALERT_BUCKETS.",
+    "Re-run the two failing focused tests after applying the missing changes."
+  ],
+  "critical_code_review_comments": [
+    "The checked-in _get_entry_certificate_token implementation at server.py:847-858 still calls find_one followed by unconditional update_one; it does not contain the conditional find_one_and_update described in the review request.",
+    "alerts_status at server.py:527-540 appends in ascending ALERT_BUCKETS order and returns the list without sorting; the claimed reverse days_out sort is absent.",
+    "PDF escaping is effective for the requested signer name, ID number and document description. The generated PDF preserved all values verbatim, stayed one-page Letter portrait, was 38-42 KB, contained the shield image, red rule, navy attestation block and required footer.",
+    "Captured certificate email HTML encoded signer, document type/description, personal note, notary name, commission number and state; no raw script tags were emitted. Certificate ID is server-generated hex and is also passed through html.escape."
+  ],
+  "updated_files": [
+    "/app/backend/tests/backend_test.py",
+    "/app/test_reports/iteration_7.json"
+  ],
+  "success_rate": {
+    "backend": "50% of four scoped fixes passed (2/4); PDF/email escaping regressions passed, race/order fixes failed",
+    "frontend": "Skipped per request"
+  },
+  "seed_data_creation": "Created temporary TEST certificate entries and auto-client records, then deleted them. Sent exactly two real certificate emails to matthew.yurksaitis@dominibusservices.com for the required concurrency test; both provider calls returned success. Email-injection inspection used a patched sender and did not send a real email.",
+  "should_call_test_agent_after_fix": true,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Do not spend more email volume until fixes land. Re-run only TestEntryCertificateFixesIteration7::test_parallel_first_email_calls_share_one_persisted_token (two real sends) and ::test_alert_status_is_chronological_without_changing_bucket_order. PDF exact literals and branded rendering passed; email HTML capture passed after final test correction.",
+  "rca_of_the_issue": "The race is reproduced because both callers can read a missing token, independently generate tokens, then unconditionally overwrite the same entry before sending; each response/email keeps its local token while MongoDB retains only the last write. Alert ordering remains wrong because the response directly iterates ascending ALERT_BUCKETS and never applies the requested descending days_out sort. These are source-level omissions, not flaky test behavior."
+}
