@@ -1,0 +1,57 @@
+{
+  "summary": "Backend-only iteration 17 verification completed against the public preview URL. All three requested fixes behaved correctly: explicit firm_phone null clearing preserved firm_address and the phone could be set again; a real provider-rejected certificate send wrote recipient/error_msg only and appeared in GET /alerts/bounces with a real reason; and a seeded legacy to/error row mapped correctly in both the bounce API and digest preview renderer. All 35 iteration 13-15 billing/auth/invite/logo regressions passed, and all 8 iteration 16 regressions passed. One newly exposed regression remains: GET email-history does not map the unified writer fields, so new rows return null to/error and the existing Resend UI cannot prefill the recipient.",
+  "backend_issues": {
+    "critical": [
+      {
+        "endpoint": "GET /api/entries/{entry_id}/email-history",
+        "issue": "New certificate audit rows persist recipient/error_msg, but email-history still reads only to/error. A real failed send was correctly stored and listed in /alerts/bounces, while the same history row returned to=null and error=null. This also leaves the existing Resend action without a recipient.",
+        "priority": "HIGH"
+      }
+    ],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_iteration17.py",
+    "/app/backend/tests/test_iteration16.py",
+    "/app/backend/tests/test_iteration15.py",
+    "/app/backend/tests/test_iteration14.py",
+    "/app/backend/tests/test_billing.py",
+    "/app/test_reports/pytest/notarium_iteration17_targeted.xml",
+    "/app/test_reports/pytest/notarium_iteration17_iteration16_regression.xml",
+    "/app/test_reports/pytest/notarium_iteration17_iteration15_regression.xml",
+    "/app/test_reports/pytest/notarium_iteration17_iteration14_regression.xml",
+    "/app/test_reports/pytest/notarium_iteration17_billing_regression.xml"
+  ],
+  "action_items": [
+    "Update GET /api/entries/{entry_id}/email-history to expose new rows through its existing to/error response contract using recipient/error_msg fallbacks (and retain to/error fallback for legacy rows), then rerun test_iteration17.py."
+  ],
+  "critical_code_review_comments": [
+    "server.py:1338-1343 serializes only d.get('to') and d.get('error'), while the refactored writer at server.py:1304-1308 stores recipient/error_msg. The missing fallback is the direct RCA for the reproduced null history values and blank Resend recipient.",
+    "routes/billing.py keeps synchronous Stripe SDK network calls inside async endpoints/helpers, which can block the FastAPI event loop under provider latency even though all 15 functional billing tests passed.",
+    "routes/billing.py falls back to the hardcoded stripe key 'sk_test_emergent' instead of failing fast when STRIPE_SECRET_KEY is absent; credentials should come only from environment variables.",
+    "server.py remains 2,484 lines, above the 700-line maintainability threshold; the billing extraction is a useful first split, but auth/profile, certificates/email audit, alerts, invites, and journal routes remain highly coupled."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_iteration17.py",
+    "/app/test_reports/pytest/notarium_iteration17_targeted.xml",
+    "/app/test_reports/pytest/notarium_iteration17_iteration16_regression.xml",
+    "/app/test_reports/pytest/notarium_iteration17_iteration15_regression.xml",
+    "/app/test_reports/pytest/notarium_iteration17_iteration14_regression.xml",
+    "/app/test_reports/pytest/notarium_iteration17_billing_regression.xml",
+    "/app/test_reports/iteration_17.json"
+  ],
+  "success_rate": {
+    "backend": "98% (45/46 executed tests passed; all requested fix assertions and all 43 regressions passed, with 1 additional email-history compatibility assertion failing)",
+    "frontend": "Not tested (backend-only request)"
+  },
+  "seed_data_creation": "Created temporary firm profile values, journal entries, a real provider-rejected certificate email row, one legacy to/error bounce row, invite/lockout/logo/seal regression resources, expired-trial accounts, and two Stripe test Checkout Sessions. Mongo test data and profile/brand state were cleaned up. External preview/certificate/invite emails and immutable Stripe sandbox Checkout Session history remain.",
+  "should_call_test_agent_after_fix": false,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "Run test_iteration17.py after adding recipient/error_msg fallback in email-history; the sole expected current failure is history_row['to'] being null. The real undeliverable address uses a unique nonexistent .com domain and reliably returned HTTP 400 with a deliverability error. The requested firm clear/reset, unified stored schema, bounce list, legacy API mapping, and legacy digest rendering all passed. The 35-test iteration 13-15 baseline and all 8 iteration 16 tests are green. /app/auth_testing.md was absent, but credentials were read from /app/memory/test_credentials.md and bcrypt $2b$, secure httpOnly cookies, sequential/concurrent lockout, and seed-admin password-update behavior passed through the regression suites.",
+  "rca_of_the_issue": "The certificate writer was correctly migrated to recipient/error_msg, and bounce_summary plus the digest renderer were given legacy fallbacks. The separate email-history serializer was missed and still projects only d.get('to') and d.get('error'). Reproduction: create an entry, email its certificate to a nonexistent .com domain, observe HTTP 400 and a failed Mongo row with recipient/error_msg, then GET that entry's email-history; the matching response row has to=null and error=null."
+}
