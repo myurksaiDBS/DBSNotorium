@@ -25,6 +25,9 @@ from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.lib.units import inch
 from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer, Image as RLImage
 from reportlab.lib.enums import TA_CENTER, TA_LEFT
+from reportlab.lib.utils import ImageReader
+
+LOGO_PATH = ROOT_DIR / "assets" / "domini-logo.png"
 
 # -------- Mongo --------
 mongo_url = os.environ['MONGO_URL']
@@ -507,6 +510,47 @@ async def export_pdf(
     doc = SimpleDocTemplate(buf, pagesize=landscape(letter),
                             rightMargin=0.4*inch, leftMargin=0.4*inch,
                             topMargin=0.4*inch, bottomMargin=0.4*inch)
+
+    def stamp(canvas, _doc):
+        canvas.saveState()
+        page_w, page_h = landscape(letter)
+        # Center watermark shield
+        if LOGO_PATH.exists():
+            try:
+                canvas.setFillAlpha(0.06)
+                img = ImageReader(str(LOGO_PATH))
+                size = 4.5 * inch
+                canvas.drawImage(img, (page_w - size) / 2, (page_h - size) / 2,
+                                 width=size, height=size, mask="auto",
+                                 preserveAspectRatio=True)
+                canvas.setFillAlpha(1.0)
+                # Small footer logo (opaque)
+                foot = 0.4 * inch
+                canvas.drawImage(img, 0.4 * inch, 0.2 * inch,
+                                 width=foot, height=foot, mask="auto",
+                                 preserveAspectRatio=True)
+            except Exception:
+                pass
+        # Footer text
+        canvas.setFont("Helvetica", 8)
+        canvas.setFillColor(colors.HexColor("#4B5563"))
+        canvas.drawString(0.95 * inch, 0.35 * inch,
+                          "Domini Business Services  ·  Notary Journal")
+        canvas.setFont("Helvetica-Oblique", 7)
+        canvas.setFillColor(colors.HexColor("#94A3B8"))
+        canvas.drawString(0.95 * inch, 0.22 * inch,
+                          "A Division of YFI Enterprises, LLC")
+        # Page number
+        canvas.setFont("Helvetica", 8)
+        canvas.setFillColor(colors.HexColor("#4B5563"))
+        canvas.drawRightString(page_w - 0.4 * inch, 0.3 * inch,
+                               f"Page {_doc.page}")
+        # Top red rule
+        canvas.setStrokeColor(colors.HexColor("#DF0D1B"))
+        canvas.setLineWidth(2)
+        canvas.line(0.4 * inch, page_h - 0.28 * inch,
+                    page_w - 0.4 * inch, page_h - 0.28 * inch)
+        canvas.restoreState()
     styles = getSampleStyleSheet()
     title_style = ParagraphStyle('t', parent=styles['Title'], fontSize=18,
                                  alignment=TA_CENTER, textColor=colors.HexColor("#00317A"))
@@ -561,7 +605,7 @@ async def export_pdf(
         ('BACKGROUND', (0,-1), (-1,-1), colors.HexColor("#F4F7F9")),
     ]))
     elems.append(table)
-    doc.build(elems)
+    doc.build(elems, onFirstPage=stamp, onLaterPages=stamp)
     buf.seek(0)
     return StreamingResponse(buf, media_type="application/pdf",
         headers={"Content-Disposition": f'attachment; filename="notary-journal-{datetime.now().strftime("%Y%m%d")}.pdf"'})
