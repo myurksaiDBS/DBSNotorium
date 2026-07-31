@@ -1,0 +1,30 @@
+{
+  "summary": "First-finish smoke test of Notarium MVP (backend + frontend). Admin login, dashboard stats, journal CRUD with signature pad, signer auto-creation, PDF export, doc types, settings persistence, sidebar navigation, and logout all work end-to-end.",
+  "tested_scope": ["backend", "frontend", "auth", "integration"],
+  "passed": [
+    "POST /api/auth/login with seeded admin returns 200 and sets httpOnly cookies",
+    "GET /api/auth/me returns admin profile with role=admin",
+    "GET /api/stats/dashboard returns monthly_series (6 buckets) + type_breakdown",
+    "GET /api/document-types returns 8 seeded types (Affidavit, Deed, Living Will, Loan Document, ...)",
+    "POST /api/entries creates entry (requires entry_date) and auto-creates client in /api/clients when signer not present",
+    "GET /api/entries/export/pdf returns application/pdf (2214 bytes)",
+    "Frontend login → dashboard renders with 4 stat cards (entries, revenue, signers, avg fee) and both charts",
+    "Journal: New Entry dialog fills, signature canvas draw captured, save persists and entry visible in list",
+    "Journal search filters by signer name (Jane Tester)",
+    "Signers page auto-shows the signer created from journal entry",
+    "Document Types page loads with add input",
+    "Settings: saving commission number shows 'Commission details saved' toast and value reflects on Dashboard header on refresh",
+    "Sidebar nav (nav-dashboard, nav-journal, nav-clients, nav-doctypes, nav-settings) all route correctly",
+    "Logout returns to /login and route is protected"
+  ],
+  "failed": [],
+  "notes": [
+    "Route for dashboard is '/' (not '/dashboard') — matches App.js routing. Not a bug.",
+    "Recharts logs a benign width(-1)/height(-1) warning on initial mount before container measures; charts still render correctly.",
+    "Signers sidebar item test-id is 'nav-clients' (label 'Signers') — consistent with request."
+  ],
+  "action_items": [],
+  "success_rate": {"backend": "100%", "frontend": "100%"},
+  "retest_needed": false,
+  "full_testing_deferred": true
+}
