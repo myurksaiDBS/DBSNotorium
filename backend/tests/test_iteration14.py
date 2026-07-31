@@ -416,8 +416,12 @@ class TestInvitations:
         assert foreign_invite["token"] not in {row["token"] for row in owner_rows}
         assert foreign_invite["token"] in {row["token"] for row in foreign_rows}
         assert admin_invite["token"] not in {row["token"] for row in foreign_rows}
-        assert isinstance(owner_data, list), "GET /api/invites contract requires a JSON array"
-        assert isinstance(foreign_data, list), "GET /api/invites contract requires a JSON array"
+        assert isinstance(owner_data, dict) and isinstance(owner_data.get("invites"), list), (
+            "GET /api/invites contract requires {invites: [...]}"
+        )
+        assert isinstance(foreign_data, dict) and isinstance(foreign_data.get("invites"), list), (
+            "GET /api/invites contract requires {invites: [...]}"
+        )
 
     def test_authenticated_get_invite_by_id(self, invite_context, admin_invite):
         listed = invite_context["owner"].get(f"{BASE_URL}/api/invites", timeout=20).json()

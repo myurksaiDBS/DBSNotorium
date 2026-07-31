@@ -9,7 +9,7 @@ import { Switch } from "@/components/ui/switch";
 import { Badge } from "@/components/ui/badge";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Textarea } from "@/components/ui/textarea";
-import { BellRing, Send, Mail, ListChecks, Lock, Stamp, KeyRound, Upload, Trash2, ImagePlus, Building2, MailX } from "lucide-react";
+import { BellRing, Send, Mail, ListChecks, Lock, Stamp, KeyRound, Upload, Trash2, ImagePlus, Building2, MailX, Plus, X } from "lucide-react";
 import { toast } from "sonner";
 
 export default function Settings() {
@@ -708,12 +708,64 @@ export default function Settings() {
                           {checklist.state}
                         </span>
                       )}
+                      {it.custom && (
+                        <span className="text-[9px] uppercase tracking-widest text-[#00317A] bg-[#EEF2FB] px-1.5 py-0.5 rounded-sm border border-[#C7D4EC]">
+                          Your step
+                        </span>
+                      )}
                     </div>
                     {it.detail && <div className="text-xs text-[#4B5563] mt-1 ml-6">{it.detail}</div>}
                   </div>
+                  {it.custom && (
+                    <button
+                      type="button"
+                      onClick={() => deleteCustomStep(it.id)}
+                      className="text-[#991B1B] hover:bg-[#FDECEC] rounded-sm p-1 shrink-0"
+                      data-testid={`checklist-delete-${it.id}`}
+                      title="Remove this custom step"
+                    >
+                      <X className="w-3.5 h-3.5" />
+                    </button>
+                  )}
                 </li>
               ))}
             </ul>
+          )}
+
+          {/* Add-your-own-step composer — always available so notaries can
+              start building the list even before the 30-day unlock. */}
+          {checklist.unlocked && (
+            <form onSubmit={addCustomStep} className="mt-6 pt-5 border-t border-[#E2E8F0] space-y-2" data-testid="add-custom-step-form">
+              <div className="text-[10px] uppercase tracking-widest text-[#4B5563]">Add your own step</div>
+              <div className="flex flex-col md:flex-row gap-2">
+                <Input
+                  value={newStep.title}
+                  onChange={(e) => setNewStep({ ...newStep, title: e.target.value })}
+                  placeholder="e.g. Order new stamp from Notary Rotary"
+                  maxLength={120}
+                  className="rounded-sm h-10 flex-1"
+                  data-testid="custom-step-title-input"
+                />
+                <Input
+                  value={newStep.detail}
+                  onChange={(e) => setNewStep({ ...newStep, detail: e.target.value })}
+                  placeholder="Optional note"
+                  maxLength={280}
+                  className="rounded-sm h-10 flex-1"
+                  data-testid="custom-step-detail-input"
+                />
+                <Button
+                  type="submit"
+                  disabled={addingStep || !newStep.title.trim()}
+                  className="rounded-sm h-10 bg-[#00317A] hover:bg-[#00265E] text-white"
+                  data-testid="add-custom-step-btn"
+                >
+                  <Plus className="w-4 h-4 mr-1" />
+                  {addingStep ? "Adding..." : "Add step"}
+                </Button>
+              </div>
+              <div className="text-[11px] text-[#4B5563]">Up to 20 custom steps · they'll count toward your progress total.</div>
+            </form>
           )}
         </Card>
       )}

@@ -186,6 +186,7 @@ function FullScreen({ children }) {
 }
 
 function BrandedFrame({ ctx, children }) {
+  const hasFirm = !!(ctx?.firm_name || ctx?.firm_logo_data);
   return (
     <div className="min-h-screen bg-[#F4F7F9]">
       <div className="bg-[#00317A] text-white">
@@ -193,15 +194,46 @@ function BrandedFrame({ ctx, children }) {
           <div className="w-14 h-14 rounded-sm bg-white p-1.5 shadow-md shrink-0">
             <img src="/domini-logo.png" alt="Domini" className="w-full h-full object-contain" />
           </div>
-          <div>
+          <div className="flex-1 min-w-0">
             <div className="font-serif text-xl leading-tight">Domini Business Services</div>
             <div className="text-[10px] uppercase tracking-[0.25em] text-white/70 mt-0.5">Notary · Signer Intake</div>
           </div>
+          {ctx?.firm_logo_data && (
+            <div className="hidden sm:flex items-center gap-3 pl-4 border-l border-white/20">
+              <div className="h-12 w-24 bg-white/95 rounded-sm p-1.5 flex items-center justify-center">
+                <img src={ctx.firm_logo_data} alt={ctx?.firm_name || "Firm logo"}
+                     className="max-h-full max-w-full object-contain" data-testid="intake-firm-logo" />
+              </div>
+            </div>
+          )}
         </div>
         <div className="h-1 bg-[#DF0D1B]" />
       </div>
 
       <div className="max-w-2xl mx-auto px-6 py-10">
+        {hasFirm && (
+          <div className="mb-4 flex items-center gap-3" data-testid="intake-firm-banner">
+            {ctx?.firm_logo_data && (
+              <div className="w-10 h-10 rounded-sm bg-white border border-[#E2E8F0] p-1.5 shrink-0 sm:hidden">
+                <img src={ctx.firm_logo_data} alt="" className="w-full h-full object-contain" />
+              </div>
+            )}
+            <div>
+              <div className="text-[10px] uppercase tracking-[0.25em] text-[#4B5563]">You've been invited by</div>
+              <div className="font-serif text-lg text-[#00317A]" data-testid="intake-firm-name">
+                {ctx?.firm_name || ctx?.notary_name || "Your notary"}
+              </div>
+              {ctx?.firm_website && (
+                <a href={ctx.firm_website.startsWith("http") ? ctx.firm_website : `https://${ctx.firm_website}`}
+                   target="_blank" rel="noopener noreferrer"
+                   className="text-xs text-[#DF0D1B] hover:underline font-mono-plex"
+                   data-testid="intake-firm-website">
+                  {ctx.firm_website}
+                </a>
+              )}
+            </div>
+          </div>
+        )}
         <div className="bg-white border border-[#E2E8F0] rounded-sm p-8 md:p-10 shadow-sm">
           <div className="mb-6">
             <div className="text-[10px] uppercase tracking-[0.25em] text-[#DF0D1B] mb-2">Before we meet</div>

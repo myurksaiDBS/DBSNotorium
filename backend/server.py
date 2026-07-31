@@ -1474,6 +1474,21 @@ async def renewal_checklist(user=Depends(get_current_user)):
             "detail": merged["detail"],
             "completed": merged["id"] in completed,
             "state_specific": merged["id"] in overrides,
+            "custom": False,
+        })
+    # Notary's own extra steps live under a `custom:` id prefix so we can
+    # tell them apart from the built-in list (and delete only them).
+    for c in user.get("custom_checklist_items", []) or []:
+        cid = c.get("id")
+        if not cid:
+            continue
+        items.append({
+            "id": cid,
+            "title": c.get("title", ""),
+            "detail": c.get("detail", ""),
+            "completed": cid in completed,
+            "state_specific": False,
+            "custom": True,
         })
     return {
         "unlocked": unlocked,
@@ -1492,12 +1507,60 @@ class ChecklistToggleIn(BaseModel):
 
 @api.post("/renewal-checklist/toggle")
 async def toggle_renewal_item(payload: ChecklistToggleIn, user=Depends(get_current_user)):
-    if payload.item_id not in _CHECKLIST_IDS:
+    # Accept built-in ids AND the notary's own custom ids (prefixed 'custom:').
+    is_builtin = payload.item_id in _CHECKLIST_IDS
+    is_custom = payload.item_id.startswith("custom:") and any(
+        c.get("id") == payload.item_id for c in (user.get("custom_checklist_items") or [])
+    )
+    if not (is_builtin or is_custom):
         raise HTTPException(status_code=400, detail="Unknown checklist item")
     op = "$addToSet" if payload.done else "$pull"
     await db.users.update_one(
         {"_id": ObjectId(user["_id"])},
         {op: {"renewal_checklist_progress": payload.item_id}})
+    return {"ok": True}
+
+
+class CustomChecklistIn(BaseModel):
+    title: str
+    detail: Optional[str] = ""
+
+
+@api.post("/renewal-checklist/custom")
+async def add_custom_checklist_item(payload: CustomChecklistIn, user=Depends(get_current_user)):
+    title = payload.title.strip()
+    if not title:
+        raise HTTPException(status_code=400, detail="Step title cannot be empty.")
+    if len(title) > 120:
+        raise HTTPException(status_code=400, detail="Step title must be under 120 characters.")
+    existing = user.get("custom_checklist_items") or []
+    if len(existing) >= 20:
+        raise HTTPException(status_code=400, detail="Maximum 20 custom steps.")
+    new_id = f"custom:{_secrets.token_urlsafe(6)}"
+    new_item = {
+        "id": new_id,
+        "title": title,
+        "detail": (payload.detail or "").strip()[:280],
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    }
+    await db.users.update_one(
+        {"_id": ObjectId(user["_id"])},
+        {"$push": {"custom_checklist_items": new_item}},
+    )
+    return {"item": {**new_item, "completed": False, "state_specific": False, "custom": True}}
+
+
+@api.delete("/renewal-checklist/custom/{item_id}")
+async def delete_custom_checklist_item(item_id: str, user=Depends(get_current_user)):
+    if not item_id.startswith("custom:"):
+        raise HTTPException(status_code=400, detail="Only custom items can be deleted.")
+    result = await db.users.update_one(
+        {"_id": ObjectId(user["_id"])},
+        {"$pull": {"custom_checklist_items": {"id": item_id},
+                   "renewal_checklist_progress": item_id}},
+    )
+    if result.modified_count == 0:
+        raise HTTPException(status_code=404, detail="Custom step not found.")
     return {"ok": True}
 
 # ---- Intake QR poster ----
@@ -1869,253 +1932,8 @@ async def get_firm_logo(user=Depends(get_current_user)):
     }
 
 
-# ---- Invitations (invite a colleague under the same firm) ----
-class InviteCreateIn(BaseModel):
-    email: EmailStr
-    firm_name: Optional[str] = None
-    state: Optional[str] = None
-    message: Optional[str] = None
-
-
-def _render_invite_email(inviter_name: str, firm_name: str, invite_url: str,
-                          personal_note: str, app_name: str) -> tuple[str, str]:
-    subject = f"You're invited to Notarium — join {firm_name or 'the team'}"
-    note_html = ""
-    if personal_note:
-        note_html = (f'<tr><td style="padding:0 32px 16px 32px;">'
-                     f'<div style="border-left:3px solid #DF0D1B;padding:8px 14px;color:#4B5563;'
-                     f'background:#F4F7F9;font-style:italic;">{_html.escape(personal_note)}</div></td></tr>')
-    firm_line = f"<b>{_html.escape(firm_name)}</b> is inviting you to " if firm_name else "You're invited to "
-    html = f"""<!doctype html><html><body style="margin:0;padding:32px;background:#F4F7F9;font-family:Georgia,'Times New Roman',serif;">
-<table role="presentation" width="580" cellpadding="0" cellspacing="0" align="center"
-       style="background:#ffffff;border:1px solid #E2E8F0;border-radius:2px;">
-  <tr><td style="background:#00317A;color:#ffffff;padding:20px 32px;">
-      <div style="font-size:11px;letter-spacing:0.25em;color:#F0B429;text-transform:uppercase;">Notarium</div>
-      <div style="font-size:22px;margin-top:4px;">You're invited</div>
-  </td></tr>
-  <tr><td style="padding:28px 32px 8px 32px;color:#111827;font-size:15px;line-height:1.6;">
-      Hi there,<br/><br/>
-      {firm_line}join Notarium — the notary journal, signer intake &amp; certificate platform from
-      Domini Business Services. <b>{_html.escape(inviter_name)}</b> set this up for you.
-  </td></tr>
-  {note_html}
-  <tr><td style="padding:8px 32px 24px 32px;">
-      <a href="{invite_url}" style="display:inline-block;background:#DF0D1B;color:#ffffff;
-             padding:12px 20px;text-decoration:none;font-family:Helvetica,Arial,sans-serif;
-             font-size:14px;letter-spacing:0.05em;text-transform:uppercase;border-radius:2px;">
-         Accept invitation
-      </a>
-      <div style="font-family:'SFMono-Regular',Menlo,Courier,monospace;font-size:11px;color:#4B5563;margin-top:14px;word-break:break-all;">
-         Or paste this link in a browser:<br/>{_html.escape(invite_url)}
-      </div>
-  </td></tr>
-  <tr><td style="padding:12px 32px 24px 32px;color:#4B5563;font-size:12px;border-top:1px solid #E2E8F0;">
-      This invitation expires in 7 days. If you weren't expecting it, you can safely ignore this email.<br/>
-      — Powered by Notarium · {_html.escape(app_name)}
-  </td></tr>
-</table></body></html>"""
-    return subject, html
-
-
-@api.post("/invites")
-async def create_invite(payload: InviteCreateIn, user=Depends(get_current_user)):
-    email = payload.email.lower().strip()
-    # Do not re-invite an already registered account
-    if await db.users.find_one({"email": email}):
-        raise HTTPException(status_code=400, detail="That email already has a Notarium account.")
-
-    firm = (payload.firm_name or user.get("firm_name") or "").strip() or None
-    state = (payload.state or user.get("state") or "").strip() or None
-    token = _secrets.token_urlsafe(24)
-    now = datetime.now(timezone.utc)
-    expires = now + timedelta(days=7)
-    doc = {
-        "token": token,
-        "email": email,
-        "firm_name": firm,
-        "state": state,
-        "invited_by_user_id": user["_id"],
-        "invited_by_name": user.get("name"),
-        "message": payload.message,
-        "created_at": now.isoformat(),
-        "expires_at": expires.isoformat(),
-        "used_at": None,
-        "email_status": "pending",
-    }
-    await db.invites.insert_one(doc)
-
-    app_url = os.environ.get("ALERT_APP_URL", "").rstrip("/")
-    invite_url = f"{app_url}/invite/{token}"
-    subject, html = _render_invite_email(
-        user.get("name", "A colleague"),
-        firm or "",
-        invite_url,
-        payload.message or "",
-        os.environ.get("EMAIL_FROM_NAME", "Domini Business Services"),
-    )
-    email_id, error = await _send_email(email, subject, html, reply_to=user.get("email"))
-    await db.invites.update_one(
-        {"token": token},
-        {"$set": {"email_status": "sent" if email_id else "failed",
-                  "email_error": error,
-                  "email_id": email_id,
-                  "email_sent_at": datetime.now(timezone.utc).isoformat()}},
-    )
-    return {
-        "token": token,
-        "invite_url": invite_url,
-        "email": email,
-        "firm_name": firm,
-        "expires_at": expires.isoformat(),
-        "email_sent": bool(email_id),
-        "email_error": error,
-    }
-
-
-@api.get("/invites")
-async def list_invites(user=Depends(get_current_user)):
-    docs = await db.invites.find({"invited_by_user_id": user["_id"]}) \
-        .sort("created_at", -1).to_list(200)
-    out = []
-    for d in docs:
-        out.append({
-            "id": str(d["_id"]),
-            "token": d["token"],
-            "email": d["email"],
-            "firm_name": d.get("firm_name"),
-            "created_at": d.get("created_at"),
-            "expires_at": d.get("expires_at"),
-            "used_at": d.get("used_at"),
-            "email_status": d.get("email_status"),
-            "email_error": d.get("email_error"),
-        })
-    return {"invites": out}
-
-
-@api.get("/invites/{invite_id}")
-async def get_invite(invite_id: str, user=Depends(get_current_user)):
-    try:
-        oid = _to_oid(invite_id)
-    except HTTPException:
-        raise HTTPException(status_code=404, detail="Invite not found")
-    d = await db.invites.find_one({"_id": oid, "invited_by_user_id": user["_id"]})
-    if not d:
-        raise HTTPException(status_code=404, detail="Invite not found")
-    return {
-        "id": str(d["_id"]),
-        "token": d["token"],
-        "email": d["email"],
-        "firm_name": d.get("firm_name"),
-        "state": d.get("state"),
-        "created_at": d.get("created_at"),
-        "expires_at": d.get("expires_at"),
-        "used_at": d.get("used_at"),
-        "email_status": d.get("email_status"),
-        "email_error": d.get("email_error"),
-        "invite_url": f"{os.environ.get('ALERT_APP_URL','').rstrip('/')}/invite/{d['token']}",
-    }
-
-
-@api.delete("/invites/{invite_id}")
-async def revoke_invite(invite_id: str, user=Depends(get_current_user)):
-    result = await db.invites.delete_one(
-        {"_id": _to_oid(invite_id), "invited_by_user_id": user["_id"]})
-    if result.deleted_count == 0:
-        raise HTTPException(status_code=404, detail="Invite not found")
-    return {"ok": True}
-
-
-@api.get("/public/invite/{token}")
-async def public_invite_info(token: str):
-    inv = await db.invites.find_one({"token": token})
-    if not inv:
-        raise HTTPException(status_code=404, detail="Invitation not found")
-    if inv.get("used_at"):
-        raise HTTPException(status_code=410, detail="This invitation has already been accepted.")
-    try:
-        if datetime.fromisoformat(inv["expires_at"]) < datetime.now(timezone.utc):
-            raise HTTPException(status_code=410, detail="This invitation has expired.")
-    except (ValueError, TypeError):
-        pass
-    return {
-        "email": inv.get("email"),
-        "firm_name": inv.get("firm_name"),
-        "state": inv.get("state"),
-        "invited_by_name": inv.get("invited_by_name"),
-    }
-
-
-class InviteAcceptIn(BaseModel):
-    password: str
-    name: str
-
-
-@api.post("/public/invite/{token}/accept")
-async def public_invite_accept(token: str, payload: InviteAcceptIn, response: Response):
-    inv = await db.invites.find_one({"token": token})
-    if not inv:
-        raise HTTPException(status_code=404, detail="Invitation not found")
-    if inv.get("used_at"):
-        raise HTTPException(status_code=410, detail="This invitation has already been accepted.")
-    try:
-        if datetime.fromisoformat(inv["expires_at"]) < datetime.now(timezone.utc):
-            raise HTTPException(status_code=410, detail="This invitation has expired.")
-    except (ValueError, TypeError):
-        pass
-    if len(payload.password) < 8:
-        raise HTTPException(status_code=400, detail="Password must be at least 8 characters.")
-    email = inv["email"]
-
-    # Atomically claim the invite BEFORE creating the user. Only one caller
-    # can transition used_at from None to a timestamp; concurrent losers
-    # correctly get 410 instead of a duplicate-user error.
-    claim_time = datetime.now(timezone.utc).isoformat()
-    claimed = await db.invites.find_one_and_update(
-        {"token": token, "used_at": None},
-        {"$set": {"used_at": claim_time}},
-    )
-    if not claimed:
-        raise HTTPException(status_code=410, detail="This invitation has already been accepted.")
-
-    user_doc = {
-        "email": email,
-        "password_hash": hash_password(payload.password),
-        "name": payload.name,
-        "role": "notary",
-        "commission_number": None,
-        "commission_expires": None,
-        "state": inv.get("state"),
-        "firm_name": inv.get("firm_name"),
-        "created_at": datetime.now(timezone.utc).isoformat(),
-        "invited_by_user_id": inv.get("invited_by_user_id"),
-    }
-    try:
-        result = await db.users.insert_one(user_doc)
-    except Exception as e:
-        # users.email has a unique index; a concurrent accept from another
-        # invite for the same address (rare edge case) would race us here.
-        await db.invites.update_one(
-            {"token": token, "used_at": claim_time},
-            {"$set": {"used_at": None}},
-        )
-        if "duplicate" in str(e).lower() or "E11000" in str(e):
-            raise HTTPException(status_code=410, detail="This invitation has already been accepted.")
-        raise
-    uid = str(result.inserted_id)
-    for t in DEFAULT_DOC_TYPES:
-        await db.document_types.insert_one({
-            **t, "user_id": uid,
-            "created_at": datetime.now(timezone.utc).isoformat(),
-        })
-    await db.invites.update_one(
-        {"token": token},
-        {"$set": {"accepted_user_id": uid}},
-    )
-    access = create_access_token(uid, email)
-    refresh = create_refresh_token(uid)
-    set_auth_cookies(response, access, refresh)
-    return {"id": uid, "email": email, "name": payload.name, "role": "notary",
-            "firm_name": inv.get("firm_name")}
+# ---- Invitations (extracted to routes/invites.py; registered after all
+# shared helpers are defined, right before the router mount.)
 
 
 # ---- Clients ----
@@ -2265,7 +2083,8 @@ async def public_get_intake(token: str):
         return {"status": "expired"}
     notary = await db.users.find_one({"_id": ObjectId(doc["user_id"])})
     # Never leak submitted PII back through the public endpoint —
-    # only surface status + display fields.
+    # only surface status + display fields + firm branding so signers
+    # know who they're sharing information with.
     return {
         "status": doc.get("status", "pending"),
         "label": doc.get("label", ""),
@@ -2273,6 +2092,9 @@ async def public_get_intake(token: str):
         "notary_name": notary.get("name") if notary else "",
         "commission_number": notary.get("commission_number") if notary else "",
         "state": notary.get("state") if notary else "",
+        "firm_name": (notary or {}).get("firm_name"),
+        "firm_logo_data": (notary or {}).get("firm_logo_data"),
+        "firm_website": (notary or {}).get("firm_website"),
         "submitted_at": doc.get("submitted_at"),
     }
 
@@ -2471,6 +2293,18 @@ async def startup():
 @app.on_event("shutdown")
 async def shutdown():
     mongo_client.close()
+
+# Register modular route packages now that all shared helpers are defined.
+from routes.invites import register_invites  # noqa: E402
+register_invites(api, db, get_current_user, {
+    "send_email": _send_email,
+    "hash_password": hash_password,
+    "create_access_token": create_access_token,
+    "create_refresh_token": create_refresh_token,
+    "set_auth_cookies": set_auth_cookies,
+    "to_oid": _to_oid,
+    "default_doc_types": DEFAULT_DOC_TYPES,
+})
 
 app.include_router(api)
 

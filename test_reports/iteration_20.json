@@ -1,0 +1,69 @@
+{
+  "summary": "Backend-only iteration 20 verification completed against the public preview URL. Custom checklist create/merge/toggle/un-toggle/delete/completion cleanup, validation, and the sequential 20-item cap passed. Intake branding exposed firm name/logo/website before and after submission without signer PII. Extracted invite CRUD/public accept and both 2-way and 6-way atomic accept races passed. One intermittent concurrency defect was reproduced: 25 simultaneous custom-step creates admitted 21 items in the first run, although the retry admitted exactly 20. Requested billing, invite/auth/logo, non-provider bounce/profile, email-history, and billing-portal regressions passed; the known CORS wildcard assertion was excluded from success totals as requested.",
+  "backend_issues": {
+    "critical": [
+      {
+        "endpoint": "POST /api/renewal-checklist/custom",
+        "issue": "The 20-step cap is non-atomic. One of two 25-request concurrency runs returned 21 successful creates and persisted more than the allowed maximum. The retry happened to return 20 successes and 5 HTTP 400 responses, confirming a race rather than a deterministic validation failure.",
+        "priority": "HIGH"
+      }
+    ],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_iteration20.py",
+    "/app/backend/tests/test_iteration14.py",
+    "/app/backend/tests/test_billing.py",
+    "/app/backend/tests/test_iteration15.py",
+    "/app/backend/tests/test_iteration16.py",
+    "/app/backend/tests/test_iteration18.py",
+    "/app/test_reports/pytest/notarium_iteration20_targeted.xml",
+    "/app/test_reports/pytest/notarium_iteration20_targeted_retry.xml",
+    "/app/test_reports/pytest/notarium_iteration20_billing_regression.xml",
+    "/app/test_reports/pytest/notarium_iteration20_iteration14_regression.xml",
+    "/app/test_reports/pytest/notarium_iteration20_iteration15_regression.xml",
+    "/app/test_reports/pytest/notarium_iteration20_iteration16_non_provider_regression.xml",
+    "/app/test_reports/pytest/notarium_iteration20_iteration18_19_targeted.xml"
+  ],
+  "action_items": [
+    "Make custom-step admission atomic in MongoDB: condition the update on the current custom_checklist_items array size being below 20 and return HTTP 400 when the conditional update does not match; then rerun the 25-request concurrency test repeatedly."
+  ],
+  "critical_code_review_comments": [
+    "server.py:1536-1548 checks len(existing) on the request's previously loaded user snapshot and performs an unconditional $push. Concurrent requests can all pass the stale length check before any push completes; use one conditional atomic update instead.",
+    "server.py remains 2,321 lines, well above the 700-line maintainability threshold. Invite extraction is registered correctly and its route suite passed, but renewal checklist and intake routes should continue moving into focused router modules.",
+    "routes/invites.py acceptance atomically claims used_at and passed six-way one-winner testing; CRUD/list wrapper/detail/public-info/delete behavior also remained intact after extraction."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_iteration20.py",
+    "/app/backend/tests/test_iteration14.py",
+    "/app/test_reports/pytest/notarium_iteration20_targeted.xml",
+    "/app/test_reports/pytest/notarium_iteration20_targeted_retry.xml",
+    "/app/test_reports/pytest/notarium_iteration20_billing_regression.xml",
+    "/app/test_reports/pytest/notarium_iteration20_iteration14_regression.xml",
+    "/app/test_reports/pytest/notarium_iteration20_iteration15_regression.xml",
+    "/app/test_reports/pytest/notarium_iteration20_iteration16_non_provider_regression.xml",
+    "/app/test_reports/pytest/notarium_iteration20_iteration18_19_targeted.xml",
+    "/app/test_reports/iteration_20.json"
+  ],
+  "success_rate": {
+    "backend": "98% stable (56/57 relevant distinct tests passed without a product defect; the custom-limit concurrency case failed once and passed once). Billing 15/15, iteration 14 relevant tests 17/17, iteration 15 4/4, iteration 16 non-provider 6/6, and iteration 17-19 compatibility/portal checks 5/5 passed.",
+    "frontend": "Not tested (backend-only request)"
+  },
+  "flaky_tests": [
+    {
+      "test": "TestCustomRenewalChecklist.test_concurrent_creates_never_exceed_twenty_step_limit",
+      "failure_rate": "50% (1/2 runs)",
+      "classification": "Product race confirmed by non-atomic read-then-push implementation"
+    }
+  ],
+  "seed_data_creation": "Created isolated checklist users, temporary branded admin intake, invite targets/accepted users/race users, billing users and Stripe test customers/sessions, lockout/logo/seal/profile/bounce/email-history resources. Mongo test resources and admin branding/profile state were restored or removed; immutable Stripe sandbox session history and attempted external invite-email activity remain.",
+  "should_call_test_agent_after_fix": false,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "Run test_iteration20.py, especially the 25-way custom-create race, several times after the atomic limit fix. All sequential custom CRUD/validation/count/cleanup cases are green. Public intake branding and no-PII assertions are green. All invite tests in iteration 14/15 plus iteration 20 passed with the required {invites:[...]} wrapper and exactly one concurrent accept winner. test_iteration14.py was corrected from its obsolete list-shape assertion to the current wrapper contract. Its only failure was the explicitly excluded pre-existing CORS wildcard check. Do not run Resend-quota-dependent tests.",
+  "rca_of_the_issue": "add_custom_checklist_item receives a user document before endpoint execution, computes existing = user.custom_checklist_items, rejects only when that stale snapshot already has 20 items, then issues an unconditional $push. Multiple requests that observe 19 or fewer items can all pass and push, exceeding 20. Reproduction: on a fresh user, issue 25 simultaneous POST /api/renewal-checklist/custom requests; the first run produced 21 HTTP 200 responses. Mitigation: combine the size predicate and push in a single atomic update and use matched/modified count to return the cap error."
+}
