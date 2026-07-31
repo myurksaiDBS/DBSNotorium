@@ -1043,6 +1043,85 @@ RENEWAL_CHECKLIST_ITEMS = [
 ]
 _CHECKLIST_IDS = {i["id"] for i in RENEWAL_CHECKLIST_ITEMS}
 
+# Per-state overlays. Keys are matched case-insensitively against user.state
+# and override title/detail on existing items only — item ids don't change,
+# so completion state stays comparable across state moves.
+STATE_CHECKLIST_OVERRIDES = {
+    "california": {
+        "education": {
+            "title": "Complete the 3-hour California-approved renewal course",
+            "detail": "California requires 3 hours of state-approved continuing education for every renewal.",
+        },
+        "exam": {
+            "title": "Pass the California notary exam (mandatory every renewal)",
+            "detail": "California requires a proctored 45-question exam every renewal cycle.",
+        },
+        "bond": {
+            "title": "Obtain a $15,000 California notary bond",
+            "detail": "Required by California Government Code §8212 for the 4-year commission.",
+        },
+        "application": {
+            "title": "Submit form NP-30 with Live Scan fingerprints and $20 fee to CA Secretary of State",
+            "detail": "Include the required Live Scan fingerprint clearance receipt.",
+        },
+        "certificate": {
+            "title": "File your oath of office with your county clerk within 30 days",
+            "detail": "California Government Code §8213 — miss the window and your commission is void.",
+        },
+    },
+    "texas": {
+        "education": {
+            "title": "Continuing education is optional in Texas",
+            "detail": "Texas does not require CE for renewal, but a refresher is smart.",
+        },
+        "exam": {
+            "title": "No state exam required in Texas",
+            "detail": "Texas does not require a notary exam for renewal.",
+        },
+        "bond": {
+            "title": "Obtain a $10,000 Texas notary bond",
+            "detail": "Required for the 4-year Texas notary commission.",
+        },
+        "application": {
+            "title": "Submit renewal Form 2301 to the Texas Secretary of State",
+            "detail": "$21 filing fee; term is four years.",
+        },
+        "certificate": {
+            "title": "Receive your commission directly from the Texas Secretary of State",
+            "detail": "No county clerk filing required in Texas.",
+        },
+    },
+    "florida": {
+        "education": {
+            "title": "3-hour education course (first-time commissions only in Florida)",
+            "detail": "Florida requires the 3-hour course only for first-time notaries, not renewals.",
+        },
+        "exam": {
+            "title": "No state exam required in Florida",
+            "detail": "Florida does not require an exam for renewal.",
+        },
+        "bond": {
+            "title": "Obtain a $7,500 Florida notary bond",
+            "detail": "Required by Florida Statute §117.01(7).",
+        },
+        "application": {
+            "title": "Submit renewal application through a bonding agency to the Florida Governor's office",
+            "detail": "Florida notaries are appointed by the Governor via a bonding agency.",
+        },
+        "certificate": {
+            "title": "Receive your new commission certificate from the Governor",
+            "detail": "No county clerk filing required in Florida.",
+        },
+    },
+}
+
+def _state_key(state: Optional[str]) -> Optional[str]:
+    if not state:
+        return None
+    s = state.strip().lower()
+    abbrev = {"ca": "california", "tx": "texas", "fl": "florida"}
+    return abbrev.get(s, s if s in STATE_CHECKLIST_OVERRIDES else None)
+
 def _renewal_unlocked(user: dict) -> tuple[bool, Optional[int]]:
     """Unlock once notary reaches the 30-day (or tighter) alert bucket."""
     expires_on = _parse_commission_date(user.get("commission_expires"))
@@ -1055,16 +1134,22 @@ def _renewal_unlocked(user: dict) -> tuple[bool, Optional[int]]:
 async def renewal_checklist(user=Depends(get_current_user)):
     unlocked, days_left = _renewal_unlocked(user)
     completed = set(user.get("renewal_checklist_progress", []))
-    items = [{
-        "id": it["id"],
-        "title": it["title"],
-        "detail": it["detail"],
-        "completed": it["id"] in completed,
-    } for it in RENEWAL_CHECKLIST_ITEMS]
+    overrides = STATE_CHECKLIST_OVERRIDES.get(_state_key(user.get("state")), {})
+    items = []
+    for it in RENEWAL_CHECKLIST_ITEMS:
+        merged = {**it, **overrides.get(it["id"], {})}
+        items.append({
+            "id": merged["id"],
+            "title": merged["title"],
+            "detail": merged["detail"],
+            "completed": merged["id"] in completed,
+            "state_specific": merged["id"] in overrides,
+        })
     return {
         "unlocked": unlocked,
         "days_left": days_left,
         "state": user.get("state") or "your state",
+        "state_customized": bool(overrides),
         "commission_expires": user.get("commission_expires"),
         "items": items,
         "completed_count": len([i for i in items if i["completed"]]),
@@ -1102,7 +1187,9 @@ def _make_qr_png(url: str, box_size: int = 12, border: int = 2) -> bytes:
     img.get_image().save(buf, format="PNG")
     return buf.getvalue()
 
-def _render_intake_poster_pdf(intake: dict, notary: dict, url: str) -> bytes:
+def _render_intake_poster_pdf(intake: dict, notary: dict, url: str,
+                              headline_override: Optional[str] = None,
+                              note_override: Optional[str] = None) -> bytes:
     from reportlab.lib.pagesizes import letter as _letter
     esc = _html.escape
     page_w, page_h = _letter
@@ -1133,10 +1220,15 @@ def _render_intake_poster_pdf(intake: dict, notary: dict, url: str) -> bytes:
                                textColor=colors.HexColor("#4B5563"),
                                alignment=TA_CENTER, fontName="Courier")
 
+    # Custom headline / note override the defaults so notaries can tailor a
+    # printed poster to a specific appointment (e.g. "Smith Closing – Tue 3pm").
+    hl_text = (headline_override or "Scan to complete your details").strip() or "Scan to complete your details"
+    subtitle = (f"Before we meet, please share your name, address and ID with "
+                f"{esc(notary.get('name','your notary'))}.")
+
     elems = []
     elems.append(Paragraph("SIGNER INTAKE", eyebrow))
-    elems.append(Paragraph("Scan to complete your details", headline))
-    subtitle = f"Before we meet, please share your name, address and ID with {esc(notary.get('name','your notary'))}."
+    elems.append(Paragraph(esc(hl_text), headline))
     elems.append(Paragraph(subtitle, sub))
 
     # QR image inside a bordered card
@@ -1187,10 +1279,13 @@ def _render_intake_poster_pdf(intake: dict, notary: dict, url: str) -> bytes:
         ('LEFTPADDING', (0,0), (-1,-1), 16),
     ]))
     elems.append(steps_table)
-    if intake.get("appointment_note"):
+    # Prefer the custom appointment note passed via query param; fall back to
+    # the note the notary saved when they created the intake link.
+    poster_note = (note_override.strip() if note_override else "") or intake.get("appointment_note", "")
+    if poster_note:
         elems.append(Spacer(1, 0.2*inch))
         note = Table(
-            [[Paragraph(f"<b>Note:</b> {esc(intake['appointment_note'])}", step)]],
+            [[Paragraph(f"<b>Note:</b> {esc(poster_note)}", step)]],
             colWidths=[6.5*inch],
         )
         note.setStyle(TableStyle([
@@ -1208,14 +1303,20 @@ def _render_intake_poster_pdf(intake: dict, notary: dict, url: str) -> bytes:
     return buf.read()
 
 @api.get("/intakes/{intake_id}/qr-poster.pdf")
-async def intake_qr_poster(intake_id: str, user=Depends(get_current_user)):
+async def intake_qr_poster(intake_id: str,
+                           headline: Optional[str] = None,
+                           note: Optional[str] = None,
+                           user=Depends(get_current_user)):
     intake = await db.signer_intakes.find_one(
         {"_id": _to_oid(intake_id), "user_id": user["_id"]})
     if not intake:
         raise HTTPException(status_code=404, detail="Intake not found")
     app_url = os.environ.get("ALERT_APP_URL", "").rstrip("/")
     public_url = f"{app_url}/intake/{intake['token']}"
-    pdf = _render_intake_poster_pdf(intake, user, public_url)
+    pdf = _render_intake_poster_pdf(
+        intake, user, public_url,
+        headline_override=headline, note_override=note,
+    )
     return StreamingResponse(
         io.BytesIO(pdf), media_type="application/pdf",
         headers={"Content-Disposition":

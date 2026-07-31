@@ -246,6 +246,11 @@ export default function Settings() {
                   {checklist.completed_count}/{checklist.total_count}
                 </div>
                 <div className="text-[10px] uppercase tracking-widest text-[#4B5563]">Done</div>
+                {checklist.state_customized && (
+                  <div className="mt-2 text-[10px] uppercase tracking-widest text-[#DF0D1B]" data-testid="checklist-state-badge">
+                    State-Specific
+                  </div>
+                )}
               </div>
             )}
           </div>
@@ -278,11 +283,16 @@ export default function Settings() {
                     data-testid={`checklist-checkbox-${it.id}`}
                   />
                   <div className="flex-1 min-w-0">
-                    <div className="flex items-baseline gap-2">
+                    <div className="flex items-baseline gap-2 flex-wrap">
                       <span className="font-mono-plex text-[10px] text-[#4B5563]">{String(idx+1).padStart(2,'0')}</span>
                       <span className={`text-sm ${it.completed ? "text-[#146334] line-through" : "text-[#111827]"} font-medium`}>
                         {it.title}
                       </span>
+                      {it.state_specific && (
+                        <span className="text-[9px] uppercase tracking-widest text-[#DF0D1B] bg-[#FDECEC] px-1.5 py-0.5 rounded-sm border border-[#F4B4B4]">
+                          {checklist.state}
+                        </span>
+                      )}
                     </div>
                     {it.detail && <div className="text-xs text-[#4B5563] mt-1 ml-6">{it.detail}</div>}
                   </div>

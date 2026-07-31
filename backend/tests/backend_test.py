@@ -894,6 +894,12 @@ class TestRegression:
             assert pdf.status_code == 200
             assert pdf.headers["content-type"].startswith("application/pdf")
             assert pdf.content.startswith(b"%PDF") and len(pdf.content) > 1000
+            exported_pdf = fitz.open(stream=pdf.content, filetype="pdf")
+            assert exported_pdf.page_count >= 1
+            export_text = "\n".join(page.get_text() for page in exported_pdf)
+            assert "Domini Business Services" in export_text
+            assert "A Division of YFI Enterprises, LLC" in export_text
+            assert len(exported_pdf[0].get_images(full=True)) >= 1, "Journal export watermark/logo missing"
         finally:
             deleted = authenticated_client.delete(f"{BASE_URL}/api/entries/{entry['id']}", timeout=20)
             assert deleted.status_code == 200
@@ -1175,8 +1181,9 @@ class TestNotariumIteration9Features:
             assert locked_data["total_count"] == 10
             assert len(locked_data["items"]) == 10
             assert len({item["id"] for item in locked_data["items"]}) == 10
-            assert all(set(item) == {"id", "title", "detail", "completed"}
+            assert all(set(item) == {"id", "title", "detail", "completed", "state_specific"}
                        for item in locked_data["items"])
+            assert isinstance(locked_data["state_customized"], bool)
 
             unlocked_profile = authenticated_client.put(
                 f"{BASE_URL}/api/auth/profile",
@@ -1496,4 +1503,170 @@ class TestNotariumIteration9Features:
                 f"{BASE_URL}/api/intakes/{intake['id']}", timeout=20
             )
             assert deleted.status_code == 200
+
+
+# Iteration 12: custom QR poster copy and state-specific renewal checklist overlays.
+class TestNotariumIteration12Features:
+    """Custom poster query copy plus state overlay identity and persistence checks."""
+
+    @staticmethod
+    def _pdf_text(response):
+        assert response.status_code == 200, response.text
+        assert response.headers["content-type"].startswith("application/pdf")
+        assert response.content.startswith(b"%PDF")
+        pdf = fitz.open(stream=response.content, filetype="pdf")
+        assert pdf.page_count == 1
+        return "\n".join(page.get_text() for page in pdf)
+
+    def test_custom_qr_poster_copy_defaults_overrides_empty_and_html(self, authenticated_client):
+        appointment_note = "TEST Default appointment note"
+        created = authenticated_client.post(
+            f"{BASE_URL}/api/intakes",
+            json={
+                "label": "TEST Iteration 12 custom poster",
+                "appointment_note": appointment_note,
+                "expires_hours": 24,
+            },
+            timeout=20,
+        )
+        assert created.status_code == 200, created.text
+        intake_id = created.json()["id"]
+        endpoint = f"{BASE_URL}/api/intakes/{intake_id}/qr-poster.pdf"
+        try:
+            both = authenticated_client.get(
+                endpoint,
+                params={"headline": "TEST Custom headline", "note": "TEST Custom poster note"},
+                timeout=40,
+            )
+            both_text = self._pdf_text(both)
+            assert "TEST Custom headline" in both_text
+            assert "TEST Custom poster note" in both_text
+            assert appointment_note not in both_text
+
+            defaults_text = self._pdf_text(authenticated_client.get(endpoint, timeout=40))
+            assert "Scan to complete your details" in defaults_text
+            assert appointment_note in defaults_text
+
+            headline_text = self._pdf_text(authenticated_client.get(
+                endpoint, params={"headline": "TEST Headline only"}, timeout=40
+            ))
+            assert "TEST Headline only" in headline_text
+            assert appointment_note in headline_text
+            assert "Scan to complete your details" not in headline_text
+
+            note_text = self._pdf_text(authenticated_client.get(
+                endpoint, params={"note": "TEST Note only"}, timeout=40
+            ))
+            assert "Scan to complete your details" in note_text
+            assert "TEST Note only" in note_text
+            assert appointment_note not in note_text
+
+            empty_text = self._pdf_text(authenticated_client.get(
+                endpoint, params={"headline": "", "note": ""}, timeout=40
+            ))
+            assert "Scan to complete your details" in empty_text
+            assert appointment_note in empty_text
+
+            markup_text = self._pdf_text(authenticated_client.get(
+                endpoint,
+                params={"headline": "TEST <Headline> & Co", "note": "TEST <Note> & Partners"},
+                timeout=40,
+            ))
+            assert "TEST <Headline> & Co" in markup_text
+            assert "TEST <Note> & Partners" in markup_text
+        finally:
+            deleted = authenticated_client.delete(
+                f"{BASE_URL}/api/intakes/{intake_id}", timeout=20
+            )
+            assert deleted.status_code == 200
+
+    def test_state_checklist_overlays_abbreviations_ids_and_toggle_persistence(
+            self, authenticated_client, credentials):
+        email = credentials["email"]
+        original = _get_admin(email)
+        assert original is not None
+        original_progress_exists = "renewal_checklist_progress" in original
+        original_progress = original.get("renewal_checklist_progress", [])
+        endpoint = f"{BASE_URL}/api/renewal-checklist"
+        expiry = (datetime.now(timezone.utc).date() + timedelta(days=25)).isoformat()
+        expected_titles = {
+            "California": ("education", "Complete the 3-hour California-approved renewal course"),
+            "CA": ("education", "Complete the 3-hour California-approved renewal course"),
+            "Texas": ("exam", "No state exam required in Texas"),
+            "TX": ("exam", "No state exam required in Texas"),
+            "Florida": ("bond", "Obtain a $7,500 Florida notary bond"),
+            "FL": ("bond", "Obtain a $7,500 Florida notary bond"),
+        }
+        try:
+            ids_by_state = {}
+            for state, (item_id, expected_title) in expected_titles.items():
+                profile = authenticated_client.put(
+                    f"{BASE_URL}/api/auth/profile",
+                    json={"state": state, "commission_expires": expiry},
+                    timeout=20,
+                )
+                assert profile.status_code == 200, profile.text
+                response = authenticated_client.get(endpoint, timeout=20)
+                assert response.status_code == 200, response.text
+                data = response.json()
+                assert data["unlocked"] is True
+                assert data["state"] == state
+                assert data["state_customized"] is True
+                assert len(data["items"]) == data["total_count"] == 10
+                ids_by_state[state] = [item["id"] for item in data["items"]]
+                overridden = next(item for item in data["items"] if item["id"] == item_id)
+                assert overridden["title"] == expected_title
+                assert overridden["state_specific"] is True
+                assert sum(item["state_specific"] for item in data["items"]) == 5
+
+            assert len({tuple(ids) for ids in ids_by_state.values()}) == 1
+
+            generic_profile = authenticated_client.put(
+                f"{BASE_URL}/api/auth/profile",
+                json={"state": "New York", "commission_expires": expiry},
+                timeout=20,
+            )
+            assert generic_profile.status_code == 200, generic_profile.text
+            generic = authenticated_client.get(endpoint, timeout=20).json()
+            assert generic["state_customized"] is False
+            assert all(item["state_specific"] is False for item in generic["items"])
+            assert next(item for item in generic["items"] if item["id"] == "education")["title"] == (
+                "Complete required continuing education or refresher course"
+            )
+            assert [item["id"] for item in generic["items"]] == ids_by_state["California"]
+
+            authenticated_client.put(
+                f"{BASE_URL}/api/auth/profile", json={"state": "California"}, timeout=20
+            )
+            enabled = authenticated_client.post(
+                f"{endpoint}/toggle", json={"item_id": "education", "done": True}, timeout=20
+            )
+            assert enabled.status_code == 200 and enabled.json() == {"ok": True}
+            california = authenticated_client.get(endpoint, timeout=20).json()
+            assert next(item for item in california["items"] if item["id"] == "education")["completed"] is True
+
+            authenticated_client.put(
+                f"{BASE_URL}/api/auth/profile", json={"state": "Texas"}, timeout=20
+            )
+            texas = authenticated_client.get(endpoint, timeout=20).json()
+            education = next(item for item in texas["items"] if item["id"] == "education")
+            assert education["completed"] is True
+            assert education["title"] == "Continuing education is optional in Texas"
+
+            disabled = authenticated_client.post(
+                f"{endpoint}/toggle", json={"item_id": "education", "done": False}, timeout=20
+            )
+            assert disabled.status_code == 200 and disabled.json() == {"ok": True}
+        finally:
+            baseline_expiry = (datetime.now(timezone.utc).date() + timedelta(days=45)).isoformat()
+            restored = authenticated_client.put(
+                f"{BASE_URL}/api/auth/profile",
+                json={"state": "California", "commission_expires": baseline_expiry},
+                timeout=20,
+            )
+            assert restored.status_code == 200, restored.text
+            if original_progress_exists:
+                _update_admin(email, set_values={"renewal_checklist_progress": original_progress})
+            else:
+                _update_admin(email, unset_fields=("renewal_checklist_progress",))
 

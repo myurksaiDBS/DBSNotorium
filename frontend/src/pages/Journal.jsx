@@ -14,7 +14,7 @@ import {
 } from "@/components/ui/dialog";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Badge } from "@/components/ui/badge";
-import { Plus, Search, FileDown, Trash2, Eye, Pencil, Mail, FileText, Copy, ClipboardList } from "lucide-react";
+import { Plus, Search, FileDown, Trash2, Eye, Pencil, Mail, FileText, Copy, ClipboardList, RotateCcw } from "lucide-react";
 import SignaturePad from "@/components/SignaturePad";
 import { toast } from "sonner";
 import { API } from "@/api";
@@ -560,6 +560,23 @@ export default function Journal() {
                             </div>
                           )}
                         </div>
+                        {h.status === "failed" && (
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            onClick={() => {
+                              // Reopen the email dialog pre-filled with this row's recipient
+                              // so the notary can retry without re-typing.
+                              setEmailingEntry(viewing);
+                              setEmailTo(h.to);
+                              setEmailNote("");
+                            }}
+                            className="rounded-sm border-[#00317A] text-[#00317A] hover:bg-[#00317A] hover:text-white shrink-0"
+                            data-testid={`resend-cert-${h.id}`}
+                          >
+                            <RotateCcw className="w-3.5 h-3.5 mr-1" /> Resend
+                          </Button>
+                        )}
                       </li>
                     ))}
                   </ul>

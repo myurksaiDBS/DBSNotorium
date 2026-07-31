@@ -1,0 +1,46 @@
+{
+  "summary": "Tested custom QR poster copy, CA/TX/FL renewal overlays, checklist persistence, Delivery Retry, and core regressions against the public preview URL. Backend feature/regression tests passed. Fixed a blocking undefined-state crash in the Intake share dialog and reverified poster download end to end. One Settings UI condition remains: the STATE-SPECIFIC badge is hidden while the customized checklist is locked.",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [
+      {
+        "component": "Settings renewal checklist header",
+        "issue": "checklist-state-badge is rendered only when checklist.unlocked is true. With the admin at California and 45 days remaining, the API returns state_customized=true but the required STATE-SPECIFIC badge is absent from the locked card header. The badge appears after temporarily unlocking at 25 days.",
+        "selector": "[data-testid='checklist-state-badge']",
+        "priority": "MEDIUM"
+      }
+    ],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/backend_test.py",
+    "/app/test_reports/pytest/notarium_iteration12_features.xml",
+    "/app/test_reports/pytest/notarium_iteration12_final.xml",
+    "/app/test_reports/pytest/notarium_iteration12_sanity.xml"
+  ],
+  "action_items": [
+    "Render checklist-state-badge whenever checklist.state_customized is true, not only inside the checklist.unlocked progress block; preserve its right-side header placement for both locked and unlocked cards."
+  ],
+  "critical_code_review_comments": [
+    "Settings.jsx lines 243-255 nest the state badge under checklist.unlocked, which conflicts with the state_customized display requirement.",
+    "Intakes.jsx referenced posterHeadline/posterNote setters and values without declaring state, causing a ReferenceError whenever the share dialog opened; two missing useState declarations were added and the complete encoded PDF download flow now passes."
+  ],
+  "updated_files": [
+    "/app/frontend/src/pages/Intakes.jsx",
+    "/app/backend/tests/backend_test.py",
+    "/app/test_reports/iteration_12.json"
+  ],
+  "success_rate": {
+    "backend": "100% for scoped feature and regression cases (8/8 final selected cases passed)",
+    "frontend": "90% (all tested flows passed after the Intake crash fix except the locked-card badge condition)"
+  },
+  "seed_data_creation": "Created temporary intakes and journal entries, plus deterministic sent/failed history rows; all were removed. Temporarily changed admin state/expiration and restored state=California, commission_expires=2026-09-14 (45 days), with original checklist progress preserved. One real certificate email was sent to the admin; failed-provider attempts delivered no email.",
+  "should_call_test_agent_after_fix": false,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "Backend poster tests validate both/default/individual/empty/HTML-character cases through PyMuPDF. State tests cover full names and CA/TX/FL abbreviations, exact spot-check titles, stable IDs, unsupported New York generic copy, and toggle persistence across state changes. UI verifies poster max lengths and encoded request URL, unlocked California badge/title/pill/generic item, failed-only Resend with recipient prefill, intake-to-Journal prefill, dashboard/login/logout, and cleanup. The known pre-existing ingress brute-force behavior and wildcard CORS were excluded per request.",
+  "rca_of_the_issue": "The remaining badge defect is caused by placing the checklist.state_customized badge inside the checklist.unlocked conditional. The fixed Intake crash was caused by JSX using posterHeadline, posterNote, setPosterHeadline, and setPosterNote without corresponding useState declarations."
+}

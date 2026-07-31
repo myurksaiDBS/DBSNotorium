@@ -25,6 +25,8 @@ export default function Intakes() {
   const [open, setOpen] = useState(false);
   const [form, setForm] = useState({ label: "", appointment_note: "", expires_hours: 168 });
   const [detail, setDetail] = useState(null);
+  const [posterHeadline, setPosterHeadline] = useState("");
+  const [posterNote, setPosterNote] = useState("");
   const nav = useNavigate();
 
   const load = async () => {
@@ -72,8 +74,12 @@ export default function Intakes() {
     toast.success("Message copied");
   };
 
-  const downloadPoster = async (item) => {
-    const url = `${API}/intakes/${item.id}/qr-poster.pdf`;
+  const downloadPoster = async (item, opts = {}) => {
+    const params = new URLSearchParams();
+    if (opts.headline) params.append("headline", opts.headline);
+    if (opts.note) params.append("note", opts.note);
+    const qs = params.toString() ? `?${params.toString()}` : "";
+    const url = `${API}/intakes/${item.id}/qr-poster.pdf${qs}`;
     const res = await fetch(url, { credentials: "include" });
     if (!res.ok) { toast.error("Failed to download poster"); return; }
     const blob = await res.blob();
@@ -238,19 +244,36 @@ export default function Intakes() {
                 </div>
                 <div className="pt-3 border-t border-[#E2E8F0]">
                   <Label className="text-[10px] uppercase tracking-widest text-[#4B5563]">Walk-in / print</Label>
-                  <div className="mt-2 flex items-center gap-3">
+                  <div className="mt-2 grid grid-cols-1 md:grid-cols-[80px,1fr] gap-3 items-start">
                     <img
                       src={`${API}/intakes/${detail.id}/qr.png`}
                       alt="QR"
                       className="w-20 h-20 border border-[#E2E8F0] rounded-sm p-1 bg-white"
                       data-testid="intake-qr-preview"
                     />
-                    <div className="flex-1">
-                      <p className="text-xs text-[#4B5563] leading-relaxed mb-2">
-                        Print a Domini-branded QR poster so walk-in signers can scan and pre-fill on their phone.
+                    <div className="space-y-2">
+                      <p className="text-xs text-[#4B5563] leading-relaxed">
+                        Print a Domini-branded QR poster so walk-in signers can scan and pre-fill on their phone. Optional: customize for a specific appointment.
                       </p>
+                      <Input
+                        placeholder="Custom headline (defaults to 'Scan to complete your details')"
+                        value={posterHeadline}
+                        onChange={(e) => setPosterHeadline(e.target.value)}
+                        className="rounded-sm h-9 text-xs"
+                        maxLength={80}
+                        data-testid="poster-headline-input"
+                      />
+                      <Textarea
+                        placeholder={`Custom appointment note (defaults to intake note${detail.appointment_note ? `: "${detail.appointment_note}"` : ''})`}
+                        value={posterNote}
+                        onChange={(e) => setPosterNote(e.target.value)}
+                        rows={2}
+                        className="rounded-sm text-xs"
+                        maxLength={240}
+                        data-testid="poster-note-input"
+                      />
                       <Button type="button"
-                        onClick={() => downloadPoster(detail)}
+                        onClick={() => downloadPoster(detail, { headline: posterHeadline, note: posterNote })}
                         className="rounded-sm bg-[#00317A] hover:bg-[#00265E] text-white"
                         data-testid="download-poster-btn">
                         <QrCode className="w-4 h-4 mr-1.5" /> Download QR Poster (PDF)
