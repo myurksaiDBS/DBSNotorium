@@ -14,7 +14,7 @@ import {
 } from "@/components/ui/dialog";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Badge } from "@/components/ui/badge";
-import { Plus, Search, FileDown, Trash2, Eye, Pencil } from "lucide-react";
+import { Plus, Search, FileDown, Trash2, Eye, Pencil, Mail, FileText, Copy } from "lucide-react";
 import SignaturePad from "@/components/SignaturePad";
 import { toast } from "sonner";
 import { API } from "@/api";
@@ -61,6 +61,45 @@ export default function Journal() {
   const sigRef = useRef(null);
   const location = useLocation();
   const nav = useNavigate();
+  const [emailingEntry, setEmailingEntry] = useState(null);
+  const [emailTo, setEmailTo] = useState("");
+  const [emailNote, setEmailNote] = useState("");
+  const [sending, setSending] = useState(false);
+
+  const openEmailDialog = (entry) => {
+    setEmailingEntry(entry);
+    setEmailTo(entry.signer_email || "");
+    setEmailNote("");
+  };
+
+  const downloadCertificate = async (entry) => {
+    const url = `${API}/entries/${entry.id}/certificate.pdf`;
+    const res = await fetch(url, { credentials: "include" });
+    if (!res.ok) { toast.error("Failed to download certificate"); return; }
+    const blob = await res.blob();
+    const link = document.createElement("a");
+    link.href = URL.createObjectURL(blob);
+    link.download = `notary-certificate-${entry.id.slice(-8)}.pdf`;
+    document.body.appendChild(link); link.click(); link.remove();
+    toast.success("Certificate downloaded");
+  };
+
+  const sendCertificateEmail = async (e) => {
+    e.preventDefault();
+    if (!emailingEntry) return;
+    setSending(true);
+    try {
+      const { data } = await api.post(
+        `/entries/${emailingEntry.id}/email-certificate`,
+        { to: emailTo, message: emailNote },
+      );
+      toast.success(`Certificate emailed to ${data.sent_to}`);
+      setEmailingEntry(null); setEmailTo(""); setEmailNote("");
+      loadEntries();
+    } catch (err) {
+      toast.error(err.response?.data?.detail || "Failed to send email");
+    } finally { setSending(false); }
+  };
 
   // If arriving from an Intake, prefill and open the New Entry dialog
   useEffect(() => {
@@ -257,6 +296,12 @@ export default function Journal() {
                 <TableCell className="text-right">
                   <div className="flex justify-end gap-1">
                     <Button size="icon" variant="ghost" onClick={() => setViewing(e)} data-testid={`view-entry-${e.id}`}><Eye className="w-4 h-4" /></Button>
+                    <Button size="icon" variant="ghost" onClick={() => downloadCertificate(e)} data-testid={`download-cert-${e.id}`} title="Download certificate PDF">
+                      <FileText className="w-4 h-4" />
+                    </Button>
+                    <Button size="icon" variant="ghost" onClick={() => openEmailDialog(e)} data-testid={`email-cert-${e.id}`} title="Email certificate to signer">
+                      <Mail className="w-4 h-4" />
+                    </Button>
                     <Button size="icon" variant="ghost" onClick={() => openEdit(e)} data-testid={`edit-entry-${e.id}`}><Pencil className="w-4 h-4" /></Button>
                     <Button size="icon" variant="ghost" onClick={() => remove(e.id)} data-testid={`delete-entry-${e.id}`} className="hover:text-[#991B1B]"><Trash2 className="w-4 h-4" /></Button>
                   </div>
@@ -439,6 +484,66 @@ export default function Journal() {
                   </div>
                 </div>
               )}
+              <div className="pt-4 border-t border-[#E2E8F0] flex flex-wrap gap-2">
+                <Button variant="outline" onClick={() => downloadCertificate(viewing)}
+                  className="rounded-sm border-[#00317A] text-[#00317A] hover:bg-[#00317A] hover:text-white"
+                  data-testid="view-download-cert-btn">
+                  <FileText className="w-4 h-4 mr-2" /> Download certificate
+                </Button>
+                <Button onClick={() => { openEmailDialog(viewing); setViewing(null); }}
+                  className="rounded-sm bg-[#DF0D1B] hover:bg-[#B00B16] text-white"
+                  data-testid="view-email-cert-btn">
+                  <Mail className="w-4 h-4 mr-2" /> Email to signer
+                </Button>
+                {viewing.certificate_emailed_at && (
+                  <div className="text-xs text-[#4B5563] self-center ml-auto">
+                    Last sent to <span className="font-medium text-[#111827]">{viewing.certificate_emailed_to}</span>
+                  </div>
+                )}
+              </div>
+            </>
+          )}
+        </DialogContent>
+      </Dialog>
+
+      {/* Email certificate dialog */}
+      <Dialog open={!!emailingEntry} onOpenChange={(o) => !o && setEmailingEntry(null)}>
+        <DialogContent className="rounded-sm max-w-lg">
+          {emailingEntry && (
+            <>
+              <DialogHeader>
+                <DialogTitle className="font-serif text-2xl text-[#00317A]">Email Certificate</DialogTitle>
+                <DialogDescription>
+                  Send a Domini-branded receipt to {emailingEntry.signer_name}. Recipients get a public
+                  download link, not the raw PDF attachment.
+                </DialogDescription>
+              </DialogHeader>
+              <form onSubmit={sendCertificateEmail} className="space-y-4">
+                <div>
+                  <Label>Signer email *</Label>
+                  <Input required type="email" value={emailTo} onChange={(e) => setEmailTo(e.target.value)}
+                    className="mt-1 rounded-sm h-11" data-testid="email-cert-to" />
+                </div>
+                <div>
+                  <Label>Personal note (optional)</Label>
+                  <Textarea value={emailNote} onChange={(e) => setEmailNote(e.target.value)}
+                    className="mt-1 rounded-sm" rows={3}
+                    placeholder="e.g., Thanks again — call me if you need another copy."
+                    data-testid="email-cert-note" />
+                </div>
+                <div className="text-xs text-[#4B5563] bg-[#F4F7F9] p-3 rounded-sm border border-[#E2E8F0]">
+                  Certificate No. <span className="font-mono-plex text-[11px]">NOT-{emailingEntry.id.slice(-8).toUpperCase()}</span>
+                  {" · "}Signer replies will come to your inbox.
+                </div>
+                <DialogFooter>
+                  <Button type="button" variant="ghost" onClick={() => setEmailingEntry(null)}>Cancel</Button>
+                  <Button type="submit" disabled={sending}
+                    className="rounded-sm bg-[#00317A] hover:bg-[#00265E] text-white"
+                    data-testid="send-cert-email-btn">
+                    <Mail className="w-4 h-4 mr-2" /> {sending ? "Sending..." : "Send Certificate"}
+                  </Button>
+                </DialogFooter>
+              </form>
             </>
           )}
         </DialogContent>

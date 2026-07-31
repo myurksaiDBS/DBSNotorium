@@ -408,13 +408,17 @@ def _render_commission_email(notary_name: str, days_left: int, expires_on: date,
 </table></body></html>"""
     return subject, html
 
-async def _send_email(to_email: str, subject: str, html: str) -> Optional[str]:
+async def _send_email(to_email: str, subject: str, html: str,
+                      reply_to: Optional[str] = None) -> tuple[Optional[str], Optional[str]]:
+    """Return (email_id, error_message). email_id set on success; error_message on failure."""
     key = os.environ.get("EMERGENT_EMAIL_KEY")
     from_name = os.environ.get("EMAIL_FROM_NAME", "Domini Business Services")
     if not key:
         logging.warning("EMERGENT_EMAIL_KEY not configured; skipping email send")
-        return None
+        return None, "Email is not configured on this server."
     payload = {"to": [to_email], "subject": subject, "html": html, "from_name": from_name}
+    if reply_to:
+        payload["contact_email"] = reply_to
     try:
         async with httpx.AsyncClient(timeout=30) as client:
             resp = await client.post(
@@ -423,13 +427,19 @@ async def _send_email(to_email: str, subject: str, html: str) -> Optional[str]:
                 json=payload,
             )
         resp.raise_for_status()
-        return resp.json().get("id")
+        return resp.json().get("id"), None
     except httpx.HTTPStatusError as e:
-        logging.error(f"Commission alert email failed: {e.response.status_code} {e.response.text}")
-        return None
+        detail = e.response.text
+        try:
+            data = e.response.json()
+            detail = data.get("message") or data.get("error") or detail
+        except Exception:
+            pass
+        logging.error(f"Email send failed: {e.response.status_code} {detail}")
+        return None, detail or f"Email provider returned {e.response.status_code}."
     except Exception as e:
-        logging.error(f"Commission alert email error: {e}")
-        return None
+        logging.error(f"Email send error: {e}")
+        return None, "Could not reach the email service."
 
 async def _scan_and_send_alerts() -> dict:
     """Iterate users, send alerts for those hitting a new bucket. Returns summary."""
@@ -449,7 +459,7 @@ async def _scan_and_send_alerts() -> dict:
             skipped += 1; continue  # already alerted for this threshold
         subject, html = _render_commission_email(
             u.get("name", ""), (expires_on - today).days, expires_on, app_url)
-        email_id = await _send_email(u["email"], subject, html)
+        email_id, _ = await _send_email(u["email"], subject, html)
         if email_id is not None:
             await db.users.update_one(
                 {"_id": u["_id"]},
@@ -500,9 +510,9 @@ async def send_test_alert(user=Depends(get_current_user)):
     app_url = os.environ.get("ALERT_APP_URL", "").rstrip("/")
     subject, html = _render_commission_email(user.get("name", ""), days_left, expires_on, app_url)
     subject = "[Preview] " + subject
-    email_id = await _send_email(user["email"], subject, html)
+    email_id, err = await _send_email(user["email"], subject, html)
     if not email_id:
-        raise HTTPException(status_code=502, detail="Could not send email. Check EMERGENT_EMAIL_KEY.")
+        raise HTTPException(status_code=400, detail=err or "Could not send email.")
     return {"ok": True, "email_id": email_id, "sent_to": user["email"]}
 
 @api.get("/alerts/status")
@@ -606,6 +616,349 @@ async def delete_entry(entry_id: str, user=Depends(get_current_user)):
     if result.deleted_count == 0:
         raise HTTPException(status_code=404, detail="Entry not found")
     return {"ok": True}
+
+# ---- Certificate rendering + helpers ----
+def _draw_domini_stamp(canvas, page_w, page_h, doc_page: int):
+    """Draw watermark shield + Domini footer (portrait or landscape aware)."""
+    canvas.saveState()
+    if LOGO_PATH.exists():
+        try:
+            canvas.setFillAlpha(0.06)
+            img = ImageReader(str(LOGO_PATH))
+            size = min(page_w, page_h) * 0.55
+            canvas.drawImage(img, (page_w - size) / 2, (page_h - size) / 2,
+                             width=size, height=size, mask="auto",
+                             preserveAspectRatio=True)
+            canvas.setFillAlpha(1.0)
+            foot = 0.4 * inch
+            canvas.drawImage(img, 0.4 * inch, 0.2 * inch,
+                             width=foot, height=foot, mask="auto",
+                             preserveAspectRatio=True)
+        except Exception:
+            pass
+    canvas.setFont("Helvetica", 8)
+    canvas.setFillColor(colors.HexColor("#4B5563"))
+    canvas.drawString(0.95 * inch, 0.35 * inch,
+                      "Domini Business Services  ·  Notary Journal")
+    canvas.setFont("Helvetica-Oblique", 7)
+    canvas.setFillColor(colors.HexColor("#94A3B8"))
+    canvas.drawString(0.95 * inch, 0.22 * inch,
+                      "A Division of YFI Enterprises, LLC")
+    canvas.setFont("Helvetica", 8)
+    canvas.setFillColor(colors.HexColor("#4B5563"))
+    canvas.drawRightString(page_w - 0.4 * inch, 0.3 * inch, f"Page {doc_page}")
+    canvas.setStrokeColor(colors.HexColor("#DF0D1B"))
+    canvas.setLineWidth(2)
+    canvas.line(0.4 * inch, page_h - 0.28 * inch,
+                page_w - 0.4 * inch, page_h - 0.28 * inch)
+    canvas.restoreState()
+
+def _render_certificate_pdf(entry: dict, notary: dict) -> bytes:
+    """Single-page letter portrait branded certificate for one entry."""
+    from reportlab.lib.pagesizes import letter as _letter
+    buf = io.BytesIO()
+    page_w, page_h = _letter
+
+    def stamp(canvas, _doc):
+        _draw_domini_stamp(canvas, page_w, page_h, _doc.page)
+
+    doc = SimpleDocTemplate(buf, pagesize=_letter,
+                            rightMargin=0.75 * inch, leftMargin=0.75 * inch,
+                            topMargin=0.55 * inch, bottomMargin=0.7 * inch)
+    styles = getSampleStyleSheet()
+    eyebrow = ParagraphStyle('eyebrow', parent=styles['Normal'], fontSize=8,
+                             textColor=colors.HexColor("#DF0D1B"),
+                             fontName="Helvetica-Bold", spaceAfter=4, leading=10)
+    title_style = ParagraphStyle('title', parent=styles['Title'], fontSize=24,
+                                 alignment=TA_LEFT, textColor=colors.HexColor("#00317A"),
+                                 fontName="Helvetica-Bold", spaceAfter=6, leading=28)
+    body = ParagraphStyle('body', parent=styles['Normal'], fontSize=10.5,
+                          textColor=colors.HexColor("#111827"), leading=15,
+                          spaceAfter=10)
+    label = ParagraphStyle('lbl', parent=styles['Normal'], fontSize=7.5,
+                           textColor=colors.HexColor("#4B5563"),
+                           fontName="Helvetica-Bold", leading=10)
+    value = ParagraphStyle('val', parent=styles['Normal'], fontSize=10.5,
+                           textColor=colors.HexColor("#111827"),
+                           leading=13)
+    mono = ParagraphStyle('mono', parent=value, fontName="Courier")
+
+    date_str = (entry.get("entry_date") or "")[:10]
+    cert_no = f"NOT-{str(entry.get('_id', ''))[-8:].upper()}"
+
+    elems = []
+    elems.append(Paragraph("CERTIFICATE OF NOTARIAL ACT", eyebrow))
+    elems.append(Paragraph(entry.get("notarization_type") or "Notarial Act", title_style))
+    # Cert meta bar
+    meta = Table(
+        [[
+            Paragraph(f"<b>Certificate No.</b>", label),
+            Paragraph(cert_no, mono),
+            Paragraph(f"<b>Date</b>", label),
+            Paragraph(date_str, mono),
+        ]],
+        colWidths=[0.9 * inch, 1.9 * inch, 0.6 * inch, 1.4 * inch],
+    )
+    meta.setStyle(TableStyle([
+        ('BACKGROUND', (0, 0), (-1, -1), colors.HexColor("#F4F7F9")),
+        ('BOX', (0, 0), (-1, -1), 0.5, colors.HexColor("#E2E8F0")),
+        ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+        ('LEFTPADDING', (0, 0), (-1, -1), 10),
+        ('RIGHTPADDING', (0, 0), (-1, -1), 10),
+        ('TOPPADDING', (0, 0), (-1, -1), 8),
+        ('BOTTOMPADDING', (0, 0), (-1, -1), 8),
+    ]))
+    elems.append(meta)
+    elems.append(Spacer(1, 0.22 * inch))
+
+    doc_desc = entry.get("document_type", "")
+    if entry.get("document_description"):
+        doc_desc += f" — {entry.get('document_description')}"
+    intro = (f"This document certifies that on <b>{date_str}</b>, "
+             f"<b>{notary.get('name', 'the undersigned Notary Public')}</b> witnessed "
+             f"the <b>{entry.get('notarization_type', 'notarial act')}</b> described below.")
+    elems.append(Paragraph(intro, body))
+
+    # Info grid
+    def cell(l, v, is_mono=False):
+        return [Paragraph(l.upper(), label),
+                Paragraph(v or "—", mono if is_mono else value)]
+
+    info_rows = [
+        [cell("Signer Name", entry.get("signer_name", ""))[0],
+         cell("Signer Name", entry.get("signer_name", ""))[1],
+         cell("Fee Charged", f"${float(entry.get('fee') or 0):.2f}", True)[0],
+         cell("Fee Charged", f"${float(entry.get('fee') or 0):.2f}", True)[1]],
+        [cell("Signer Address", entry.get("signer_address") or "—")[0],
+         cell("Signer Address", entry.get("signer_address") or "—")[1], "", ""],
+        [cell("Document Type", entry.get("document_type") or "—")[0],
+         cell("Document Type", entry.get("document_type") or "—")[1],
+         cell("Description", entry.get("document_description") or "—")[0],
+         cell("Description", entry.get("document_description") or "—")[1]],
+        [cell("ID Type", entry.get("id_type") or "—")[0],
+         cell("ID Type", entry.get("id_type") or "—")[1],
+         cell("ID Number", entry.get("id_number") or "—", True)[0],
+         cell("ID Number", entry.get("id_number") or "—", True)[1]],
+        [cell("ID Issued By", entry.get("id_issued_by") or "—")[0],
+         cell("ID Issued By", entry.get("id_issued_by") or "—")[1],
+         cell("ID Expiration", entry.get("id_expiration") or "—", True)[0],
+         cell("ID Expiration", entry.get("id_expiration") or "—", True)[1]],
+    ]
+    # Restructure rows: each row = [label1, value1, label2, value2] pairs stacked
+    grid_rows = []
+    for r in info_rows:
+        grid_rows.append([r[0], r[2]])
+        grid_rows.append([r[1], r[3]])
+
+    grid = Table(grid_rows, colWidths=[3.4 * inch, 3.4 * inch])
+    grid.setStyle(TableStyle([
+        ('VALIGN', (0, 0), (-1, -1), 'TOP'),
+        ('LEFTPADDING', (0, 0), (-1, -1), 0),
+        ('RIGHTPADDING', (0, 0), (-1, -1), 8),
+        ('TOPPADDING', (0, 0), (-1, -1), 0),
+        ('BOTTOMPADDING', (0, 0), (-1, -1), 2),
+        ('LINEBELOW', (0, 1), (-1, 1), 0.25, colors.HexColor("#E2E8F0")),
+        ('LINEBELOW', (0, 3), (-1, 3), 0.25, colors.HexColor("#E2E8F0")),
+        ('LINEBELOW', (0, 5), (-1, 5), 0.25, colors.HexColor("#E2E8F0")),
+        ('LINEBELOW', (0, 7), (-1, 7), 0.25, colors.HexColor("#E2E8F0")),
+        ('TOPPADDING', (0, 2), (-1, 2), 8),
+        ('TOPPADDING', (0, 4), (-1, 4), 8),
+        ('TOPPADDING', (0, 6), (-1, 6), 8),
+        ('TOPPADDING', (0, 8), (-1, 8), 8),
+    ]))
+    elems.append(grid)
+    elems.append(Spacer(1, 0.25 * inch))
+
+    # Signature panel
+    sig_data = entry.get("signature_data") or ""
+    if sig_data and sig_data.startswith("data:image/") and "base64," in sig_data:
+        try:
+            sig_bytes = base64.b64decode(sig_data.split("base64,", 1)[1])
+            sig_img = RLImage(io.BytesIO(sig_bytes), width=3.0 * inch, height=0.95 * inch)
+            sig_img.hAlign = 'LEFT'
+            sig_row = Table(
+                [[Paragraph("SIGNER'S SIGNATURE", label)],
+                 [sig_img]],
+                colWidths=[6.8 * inch],
+            )
+            sig_row.setStyle(TableStyle([
+                ('BOX', (0, 0), (-1, -1), 0.5, colors.HexColor("#E2E8F0")),
+                ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor("#F4F7F9")),
+                ('TOPPADDING', (0, 0), (-1, -1), 8),
+                ('BOTTOMPADDING', (0, 0), (-1, -1), 8),
+                ('LEFTPADDING', (0, 0), (-1, -1), 10),
+                ('RIGHTPADDING', (0, 0), (-1, -1), 10),
+            ]))
+            elems.append(sig_row)
+            elems.append(Spacer(1, 0.2 * inch))
+        except Exception:
+            pass
+
+    # Notary attestation block
+    exp = notary.get("commission_expires") or ""
+    exp_str = exp[:10] if exp else "—"
+    notary_html = (
+        f"<b>Notary Public:</b> {notary.get('name', '—')}<br/>"
+        f"<b>Commission No.:</b> {notary.get('commission_number') or '—'} "
+        f"&nbsp;&nbsp;·&nbsp;&nbsp; "
+        f"<b>State:</b> {notary.get('state') or '—'} "
+        f"&nbsp;&nbsp;·&nbsp;&nbsp; "
+        f"<b>Commission Expires:</b> {exp_str}"
+    )
+    notary_para = ParagraphStyle('nota', parent=value, fontSize=9.5, leading=14,
+                                 textColor=colors.HexColor("#111827"))
+    notary_bar = Table(
+        [[Paragraph("NOTARY ATTESTATION", label)],
+         [Paragraph(notary_html, notary_para)]],
+        colWidths=[6.8 * inch],
+    )
+    notary_bar.setStyle(TableStyle([
+        ('BOX', (0, 0), (-1, -1), 1, colors.HexColor("#00317A")),
+        ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor("#00317A")),
+        ('TEXTCOLOR', (0, 0), (-1, 0), colors.white),
+        ('LEFTPADDING', (0, 0), (-1, -1), 12),
+        ('RIGHTPADDING', (0, 0), (-1, -1), 12),
+        ('TOPPADDING', (0, 0), (-1, -1), 8),
+        ('BOTTOMPADDING', (0, 0), (-1, -1), 8),
+    ]))
+    # override the header cell padding manually via a stronger override
+    notary_bar.setStyle(TableStyle([
+        ('TEXTCOLOR', (0, 0), (-1, 0), colors.white),
+        ('BOX', (0, 0), (-1, -1), 0.75, colors.HexColor("#00317A")),
+        ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor("#00317A")),
+        ('TOPPADDING', (0, 0), (-1, 0), 6),
+        ('BOTTOMPADDING', (0, 0), (-1, 0), 6),
+        ('TOPPADDING', (0, 1), (-1, 1), 10),
+        ('BOTTOMPADDING', (0, 1), (-1, 1), 12),
+        ('LEFTPADDING', (0, 0), (-1, -1), 12),
+        ('RIGHTPADDING', (0, 0), (-1, -1), 12),
+    ]))
+    elems.append(notary_bar)
+
+    doc.build(elems, onFirstPage=stamp, onLaterPages=stamp)
+    buf.seek(0)
+    return buf.read()
+
+async def _get_entry_certificate_token(entry_id_obj: ObjectId) -> str:
+    """Ensure the entry has a certificate_token; return it."""
+    doc = await db.entries.find_one({"_id": entry_id_obj}, {"certificate_token": 1})
+    if doc and doc.get("certificate_token"):
+        return doc["certificate_token"]
+    token = _secrets.token_urlsafe(20)
+    await db.entries.update_one(
+        {"_id": entry_id_obj},
+        {"$set": {"certificate_token": token,
+                  "certificate_token_created_at": datetime.now(timezone.utc).isoformat()}},
+    )
+    return token
+
+@api.get("/entries/{entry_id}/certificate.pdf")
+async def download_certificate(entry_id: str, user=Depends(get_current_user)):
+    doc = await db.entries.find_one({"_id": _to_oid(entry_id), "user_id": user["_id"]})
+    if not doc:
+        raise HTTPException(status_code=404, detail="Entry not found")
+    pdf = _render_certificate_pdf(doc, user)
+    return StreamingResponse(
+        io.BytesIO(pdf), media_type="application/pdf",
+        headers={"Content-Disposition": f'attachment; filename="notary-certificate-{entry_id[-8:]}.pdf"'})
+
+@api.get("/public/certificate/{token}")
+async def public_download_certificate(token: str):
+    doc = await db.entries.find_one({"certificate_token": token})
+    if not doc:
+        raise HTTPException(status_code=404, detail="Certificate not found")
+    notary = await db.users.find_one({"_id": ObjectId(doc["user_id"])})
+    if not notary:
+        raise HTTPException(status_code=404, detail="Notary not found")
+    pdf = _render_certificate_pdf(doc, notary)
+    return StreamingResponse(
+        io.BytesIO(pdf), media_type="application/pdf",
+        headers={"Content-Disposition":
+                 f'inline; filename="notary-certificate-{str(doc["_id"])[-8:]}.pdf"'})
+
+class CertificateEmailIn(BaseModel):
+    to: EmailStr
+    message: Optional[str] = ""
+
+@api.post("/entries/{entry_id}/email-certificate")
+async def email_certificate(entry_id: str, payload: CertificateEmailIn,
+                            user=Depends(get_current_user)):
+    entry_oid = _to_oid(entry_id)
+    doc = await db.entries.find_one({"_id": entry_oid, "user_id": user["_id"]})
+    if not doc:
+        raise HTTPException(status_code=404, detail="Entry not found")
+    token = await _get_entry_certificate_token(entry_oid)
+    app_url = os.environ.get("ALERT_APP_URL", "").rstrip("/")
+    cert_url = f"{app_url}/api/public/certificate/{token}"
+    date_str = (doc.get("entry_date") or "")[:10]
+    doc_desc = doc.get("document_type", "")
+    if doc.get("document_description"):
+        doc_desc += f" — {doc.get('document_description')}"
+    signer = doc.get("signer_name") or "there"
+    custom_note = (payload.message or "").strip()
+    custom_html = (f'<div style="padding:12px 14px;background:#F4F7F9;border-left:3px solid #DF0D1B;'
+                   f'font-size:13px;color:#111827;margin:16px 0;">'
+                   f'{custom_note}</div>') if custom_note else ""
+    subject = f"Your notarization certificate — {date_str}"
+    html = f"""<!doctype html>
+<html><body style="margin:0;padding:0;background:#F4F7F9;font-family:Helvetica,Arial,sans-serif;color:#111827;">
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#F4F7F9;padding:32px 0;">
+  <tr><td align="center">
+    <table role="presentation" width="560" cellpadding="0" cellspacing="0" style="background:#ffffff;border:1px solid #E2E8F0;border-radius:4px;overflow:hidden;">
+      <tr>
+        <td style="background:#00317A;padding:20px 28px;">
+          <div style="color:#ffffff;font-family:Georgia,'Times New Roman',serif;font-size:20px;font-weight:700;">Domini Business Services</div>
+          <div style="color:rgba(255,255,255,0.7);font-size:10px;letter-spacing:2.5px;text-transform:uppercase;margin-top:2px;">Notarium · Certificate</div>
+        </td>
+      </tr>
+      <tr><td style="background:#DF0D1B;height:3px;line-height:3px;font-size:0;">&nbsp;</td></tr>
+      <tr>
+        <td style="padding:32px 28px 8px;">
+          <div style="font-size:10px;letter-spacing:2.5px;text-transform:uppercase;color:#DF0D1B;margin-bottom:8px;">Certificate of Notarial Act</div>
+          <h1 style="font-family:Georgia,'Times New Roman',serif;font-size:24px;color:#00317A;margin:0 0 12px;">Your notarization is on record</h1>
+          <p style="font-size:14px;line-height:1.6;color:#4B5563;margin:0 0 18px;">Hi {signer},</p>
+          <p style="font-size:14px;line-height:1.6;color:#111827;margin:0 0 8px;">
+            {user.get('name','Your notary')} has completed the notarial act on <b>{date_str}</b>
+            for <b>{doc_desc or 'the document you presented'}</b>.
+          </p>
+          <p style="font-size:14px;line-height:1.6;color:#111827;margin:0 0 22px;">
+            Your personal, single-page branded certificate is ready to view and save below.
+          </p>
+          {custom_html}
+          <table role="presentation" cellpadding="0" cellspacing="0"><tr><td style="background:#00317A;border-radius:3px;">
+            <a href="{cert_url}" style="display:inline-block;padding:12px 22px;color:#ffffff;text-decoration:none;font-size:13px;font-weight:600;letter-spacing:0.5px;">Download your certificate (PDF)</a>
+          </td></tr></table>
+          <p style="font-size:11px;color:#94A3B8;margin:18px 0 0;">Certificate link: <a href="{cert_url}" style="color:#00317A;">{cert_url}</a></p>
+        </td>
+      </tr>
+      <tr>
+        <td style="padding:20px 28px;border-top:1px solid #E2E8F0;background:#F8FAFC;font-family:'Courier New',monospace;font-size:11px;color:#4B5563;">
+          Certificate No. <span style="color:#111827;">NOT-{str(doc['_id'])[-8:].upper()}</span><br/>
+          Notary: <span style="color:#111827;">{user.get('name','—')}</span> ·
+          Commission: <span style="color:#111827;">{user.get('commission_number') or '—'}</span> ·
+          {user.get('state') or '—'}
+        </td>
+      </tr>
+      <tr>
+        <td style="padding:16px 28px;background:#00317A;color:rgba(255,255,255,0.55);font-size:10px;letter-spacing:2px;text-transform:uppercase;text-align:center;font-family:'Courier New',monospace;">
+          A Division of YFI Enterprises, LLC
+        </td>
+      </tr>
+    </table>
+  </td></tr>
+</table></body></html>"""
+    email_id, err = await _send_email(payload.to, subject, html, reply_to=user["email"])
+    if not email_id:
+        raise HTTPException(status_code=400, detail=err or "Could not send certificate email.")
+    await db.entries.update_one(
+        {"_id": entry_oid},
+        {"$set": {
+            "certificate_emailed_to": payload.to,
+            "certificate_emailed_at": datetime.now(timezone.utc).isoformat(),
+            "certificate_email_id": email_id,
+        }})
+    return {"ok": True, "email_id": email_id, "sent_to": payload.to,
+            "certificate_url": cert_url}
 
 # ---- Dashboard stats ----
 @api.get("/stats/dashboard")
@@ -977,6 +1330,8 @@ async def startup():
     await db.document_types.create_index([("user_id", 1), ("name", 1)])
     await db.signer_intakes.create_index("token", unique=True)
     await db.signer_intakes.create_index([("user_id", 1), ("created_at", -1)])
+    # Certificate tokens are optional; use a sparse index so many nulls are fine.
+    await db.entries.create_index("certificate_token", unique=True, sparse=True)
     await db.cron_runs.create_index("run_id", unique=True)
     await db.login_attempts.create_index("identifier")
 

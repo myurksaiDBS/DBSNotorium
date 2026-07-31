@@ -1,5 +1,7 @@
 """API regression tests for commission alerts, signer intakes, authentication, dashboard, journal and PDF export."""
 import asyncio
+import io
+import re
 import sys
 import time
 import uuid
@@ -10,7 +12,9 @@ from pathlib import Path
 import pytest
 import requests
 import bcrypt
+import fitz
 import yaml
+from bson import ObjectId
 from motor.motor_asyncio import AsyncIOMotorClient
 from dotenv import dotenv_values
 
@@ -635,9 +639,221 @@ class TestSignerIntakes:
         assert response.status_code == 400
         assert response.json()["detail"] == "Invalid identifier"
 
+# Entry Certificate PDF rendering, public-link, email-provider and persistence checks.
+CERTIFICATE_FIELDS = (
+    "certificate_token", "certificate_token_created_at", "certificate_emailed_at",
+    "certificate_emailed_to", "certificate_email_id",
+)
+
+
+@pytest.fixture(scope="class")
+def isolated_certificate_entry(authenticated_client):
+    """Snapshot one seeded entry and restore its certificate metadata after tests."""
+    listed = authenticated_client.get(f"{BASE_URL}/api/entries", timeout=20)
+    assert listed.status_code == 200 and listed.json(), "Certificate tests require a seeded journal entry"
+    entry = listed.json()[0]
+    entry_oid = ObjectId(entry["id"])
+
+    async def snapshot_and_reset(database):
+        original = await database.entries.find_one({"_id": entry_oid})
+        assert original is not None
+        await database.entries.update_one(
+            {"_id": entry_oid}, {"$unset": {field: "" for field in CERTIFICATE_FIELDS}}
+        )
+        return original
+
+    original = _db_call(snapshot_and_reset)
+    yield entry
+
+    async def restore(database):
+        set_values = {field: original[field] for field in CERTIFICATE_FIELDS if field in original}
+        unset_values = {field: "" for field in CERTIFICATE_FIELDS if field not in original}
+        update = {}
+        if set_values:
+            update["$set"] = set_values
+        if unset_values:
+            update["$unset"] = unset_values
+        await database.entries.update_one({"_id": entry_oid}, update)
+
+    _db_call(restore)
+
+
+class TestEntryCertificate:
+    """Authenticated PDF, public token, validation, Resend and metadata lifecycle tests."""
+
+    def test_certificate_auth_id_validation_and_pdf_contract(
+            self, authenticated_client, isolated_certificate_entry):
+        entry = isolated_certificate_entry
+        endpoint = f"{BASE_URL}/api/entries/{entry['id']}/certificate.pdf"
+
+        unauthorized = requests.get(endpoint, timeout=30)
+        assert unauthorized.status_code == 401
+        assert unauthorized.json()["detail"] == "Not authenticated"
+
+        malformed = authenticated_client.get(
+            f"{BASE_URL}/api/entries/not-an-object-id/certificate.pdf", timeout=30
+        )
+        assert malformed.status_code == 400
+        assert malformed.json()["detail"] == "Invalid identifier"
+
+        missing = authenticated_client.get(
+            f"{BASE_URL}/api/entries/000000000000000000000000/certificate.pdf", timeout=30
+        )
+        assert missing.status_code == 404
+        assert missing.json()["detail"] == "Entry not found"
+
+        response = authenticated_client.get(endpoint, timeout=30)
+        assert response.status_code == 200
+        assert response.headers["content-type"].startswith("application/pdf")
+        disposition = response.headers.get("content-disposition", "")
+        assert disposition.startswith("attachment;") and ".pdf" in disposition
+        assert response.content.startswith(b"%PDF")
+        assert 15_000 <= len(response.content) <= 100_000, len(response.content)
+        print(f"Certificate PDF size: {len(response.content)} bytes")
+
+        pdf = fitz.open(stream=response.content, filetype="pdf")
+        assert pdf.page_count == 1
+        page = pdf[0]
+        assert round(page.rect.width) == 612 and round(page.rect.height) == 792
+        text = page.get_text()
+        required_text = (
+            "CERTIFICATE OF NOTARIAL ACT", entry["notarization_type"],
+            entry["entry_date"][:10], entry["signer_name"], entry["id_number"],
+            "NOTARY ATTESTATION", "A Division of YFI Enterprises, LLC",
+        )
+        for expected in required_text:
+            assert expected in text, f"Missing certificate text: {expected!r}"
+        assert re.search(r"NOT-[A-F0-9]{8}", text)
+        assert f"${float(entry.get('fee') or 0):.2f}" in text
+        assert len(page.get_images(full=True)) >= 1, "Domini shield image/watermark missing"
+        drawing_colors = []
+        for drawing in page.get_drawings():
+            drawing_colors.extend(color for color in (drawing.get("color"), drawing.get("fill")) if color)
+        expected_red = (0.875, 0.051, 0.106)
+        expected_navy = (0.0, 0.192, 0.478)
+        assert any(sum(abs(actual[i] - expected_red[i]) for i in range(3)) < 0.03
+                   for actual in drawing_colors), "Red top rule missing"
+        assert any(sum(abs(actual[i] - expected_navy[i]) for i in range(3)) < 0.03
+                   for actual in drawing_colors), "Navy attestation block missing"
+
+    def test_email_validation_token_reuse_persistence_and_public_pdf(
+            self, authenticated_client, credentials, isolated_certificate_entry):
+        entry = isolated_certificate_entry
+        endpoint = f"{BASE_URL}/api/entries/{entry['id']}/email-certificate"
+
+        for payload in ({}, {"to": "not-an-email", "message": "TEST invalid"}):
+            invalid = authenticated_client.post(endpoint, json=payload, timeout=30)
+            assert invalid.status_code == 422
+            assert isinstance(invalid.json().get("detail"), list)
+
+        first_to = credentials["email"]
+        first = authenticated_client.post(
+            endpoint,
+            json={"to": first_to, "message": "TEST certificate delivery — first send."},
+            timeout=40,
+        )
+        assert first.status_code == 200, first.text
+        first_data = first.json()
+        assert first_data["ok"] is True and first_data["sent_to"] == first_to
+        assert isinstance(first_data["email_id"], str) and first_data["email_id"]
+        assert first_data["certificate_url"].startswith(f"{BASE_URL}/api/public/certificate/")
+        first_token = first_data["certificate_url"].rsplit("/", 1)[-1]
+        assert len(first_token) >= 20
+
+        async def fetch(database):
+            return await database.entries.find_one({"_id": ObjectId(entry["id"])})
+
+        persisted = _db_call(fetch)
+        assert persisted["certificate_token"] == first_token
+        assert persisted["certificate_emailed_to"] == first_to
+        assert persisted["certificate_email_id"] == first_data["email_id"]
+        assert datetime.fromisoformat(persisted["certificate_emailed_at"])
+
+        public = requests.get(first_data["certificate_url"], timeout=30)
+        assert public.status_code == 200
+        assert public.headers["content-type"].startswith("application/pdf")
+        assert public.headers.get("content-disposition", "").startswith("inline;")
+        public_pdf = fitz.open(stream=public.content, filetype="pdf")
+        assert public_pdf.page_count == 1
+        assert public_pdf[0].get_text() == fitz.open(
+            stream=authenticated_client.get(
+                f"{BASE_URL}/api/entries/{entry['id']}/certificate.pdf", timeout=30
+            ).content,
+            filetype="pdf",
+        )[0].get_text()
+
+        second_to_input = credentials["email"].upper()
+        second_to = second_to_input.split("@", 1)[0] + "@" + second_to_input.split("@", 1)[1].lower()
+        second = authenticated_client.post(
+            endpoint,
+            json={"to": second_to_input, "message": "TEST certificate delivery — token reuse."},
+            timeout=40,
+        )
+        assert second.status_code == 200, second.text
+        second_data = second.json()
+        assert second_data["sent_to"] == second_to
+        assert second_data["certificate_url"].rsplit("/", 1)[-1] == first_token
+        assert second_data["email_id"] != first_data["email_id"]
+        persisted_second = _db_call(fetch)
+        assert persisted_second["certificate_token"] == first_token
+        assert persisted_second["certificate_emailed_to"] == second_to
+        assert persisted_second["certificate_email_id"] == second_data["email_id"]
+
+        undeliverable = authenticated_client.post(
+            endpoint,
+            json={"to": "delivered@resend.dev", "message": "TEST expected provider rejection."},
+            timeout=40,
+        )
+        assert undeliverable.status_code == 400, undeliverable.text
+        detail = undeliverable.json()["detail"]
+        assert isinstance(detail, str) and detail
+        assert "undeliverable" in detail.lower(), detail
+        after_failure = _db_call(fetch)
+        assert after_failure["certificate_token"] == first_token
+        assert after_failure["certificate_emailed_to"] == second_to
+        assert after_failure["certificate_email_id"] == second_data["email_id"]
+
+    def test_public_bogus_token_is_404_without_auth(self):
+        response = requests.get(
+            f"{BASE_URL}/api/public/certificate/TEST_BOGUS_{uuid.uuid4().hex}", timeout=20
+        )
+        assert response.status_code == 404
+        assert response.json()["detail"] == "Certificate not found"
+
 
 class TestRegression:
     """Existing dashboard, journal persistence and PDF export regression checks."""
+    def test_certificate_handles_user_entered_markup_safely(self, authenticated_client):
+        """User-entered journal text must not crash ReportLab's XML-like Paragraph parser."""
+        payload = {
+            "entry_date": datetime.now(timezone.utc).isoformat(),
+            "notarization_type": "Acknowledgment",
+            "document_type": "Affidavit <copy>",
+            "document_description": "TEST A & B <script>alert('x')</script>",
+            "signer_name": "TEST Alice <Signer> & Bob",
+            "signer_email": "markup.qa@example.test",
+            "id_type": "State ID",
+            "id_number": "TEST-<ID>&-0726",
+            "fee": 2.50,
+        }
+        created = authenticated_client.post(f"{BASE_URL}/api/entries", json=payload, timeout=20)
+        assert created.status_code == 200, created.text
+        entry_id = created.json()["id"]
+        try:
+            response = authenticated_client.get(
+                f"{BASE_URL}/api/entries/{entry_id}/certificate.pdf", timeout=30
+            )
+            assert response.status_code == 200, response.text
+            pdf = fitz.open(stream=response.content, filetype="pdf")
+            assert pdf.page_count == 1
+            text = pdf[0].get_text()
+            assert "TEST Alice" in text and "Bob" in text
+            assert "TEST-<ID>&-0726" in text
+        finally:
+            deleted = authenticated_client.delete(f"{BASE_URL}/api/entries/{entry_id}", timeout=20)
+            assert deleted.status_code == 200
+
+
 
     def test_dashboard_stats_schema(self, authenticated_client):
         response = authenticated_client.get(f"{BASE_URL}/api/stats/dashboard", timeout=20)
