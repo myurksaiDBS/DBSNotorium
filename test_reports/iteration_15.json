@@ -1,0 +1,42 @@
+{
+  "summary": "Backend-only iteration 15 verification completed against the public preview URL. All 4 targeted fix tests passed: six truly concurrent aiohttp invite accepts produced exactly one 200 and five 410 responses with no 400 and one persisted user; spoofed image bytes and GIF/BMP were rejected while real PIL PNG/JPEG uploads succeeded; owner-scoped invite detail returned the complete contract while non-owner and malformed IDs returned 404; seven concurrent wrong-password logins preserved every 401 increment in one counter document, reached lockout, and the next correct-password attempt returned 429. All 16 applicable iteration 14 regressions and all 15 iteration 13 billing tests also passed (35/35 total).",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_iteration15.py",
+    "/app/backend/tests/test_iteration14.py",
+    "/app/backend/tests/test_billing.py",
+    "/app/test_reports/pytest/notarium_iteration15_targeted.xml",
+    "/app/test_reports/pytest/notarium_iteration15_iteration14_regression.xml",
+    "/app/test_reports/pytest/notarium_iteration15_billing_regression.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "The four scoped implementations match the required behavior. Invite claiming uses a conditional used_at transition on a uniquely indexed token; firm-logo bytes are base64-decoded and PIL-verified; invite detail catches malformed ObjectIds; login failures use Mongo $inc and conditional lock timestamp creation.",
+    "Non-blocking hardening note: login_attempts.identifier is indexed but not unique. The executed seven-request API race and an additional 100-way direct upsert probe both produced exactly one document with no lost count, but making this index unique would database-enforce the intended one-counter-per-email invariant.",
+    "Non-blocking hardening note: invite claim is atomic for concurrent callers, but user creation, default document-type inserts, and accepted_user_id update are not a Mongo transaction; an unexpected database failure after user insertion could leave partial post-claim state. No such failure occurred in testing."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_iteration15.py",
+    "/app/test_reports/pytest/notarium_iteration15_targeted.xml",
+    "/app/test_reports/pytest/notarium_iteration15_iteration14_regression.xml",
+    "/app/test_reports/pytest/notarium_iteration15_billing_regression.xml",
+    "/app/test_reports/iteration_15.json"
+  ],
+  "success_rate": {
+    "backend": "100% (35/35 executed tests passed: targeted fixes 4/4, applicable iteration 14 regressions 16/16, billing regressions 15/15)",
+    "frontend": "Not tested (backend-only request)"
+  },
+  "seed_data_creation": "Created fresh invite targets, a foreign invite owner, a fresh lockout account, expired-trial/billing regression accounts, journal/intake resources, temporary firm-logo/seal data, and two Stripe test Checkout Sessions. Mongo users/resources/invites/login counters/brand changes/payment rows and Stripe customers were cleaned up; immutable Stripe sandbox Checkout Session history remains.",
+  "should_call_test_agent_after_fix": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Use test_iteration15.py for the required asyncio.gather/aiohttp concurrency checks. The invite race uses six simultaneous POSTs and verifies one user plus accepted_user_id. The lockout race uses seven simultaneous wrong-password POSTs, verifies one login_attempts document, count equals the number of 401 responses and is at least five, then confirms a correct password is blocked with 429 before cleanup. Iteration 14 CORS wildcard and GET /api/invites wrapper assertions were intentionally excluded per the review note; wrapper-based invite listing and owner isolation were still verified in iteration 15.",
+  "rca_of_the_issue": "The iteration 14 defects are resolved by a conditional Mongo invite claim before user creation, decoded-byte/PIL format validation for logos, a new owner-filtered invite-detail route with controlled ObjectId handling, and atomic Mongo $inc for login counters with conditional locked_until creation. Public endpoint tests confirmed each fix and no scoped regression."
+}

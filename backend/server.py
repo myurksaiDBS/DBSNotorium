@@ -256,13 +256,19 @@ async def login(payload: LoginIn, response: Response, request: Request):
 
     user = await db.users.find_one({"email": email})
     if not user or not verify_password(payload.password, user["password_hash"]):
-        count = (attempt_doc.get("count", 0) if attempt_doc else 0) + 1
-        update = {"count": count, "updated_at": now.isoformat()}
-        if count >= 5:
-            update["locked_until"] = (now + timedelta(minutes=15)).isoformat()
-        await db.login_attempts.update_one(
-            {"identifier": identifier}, {"$set": update, "$setOnInsert": {"identifier": identifier}},
-            upsert=True)
+        # Atomic increment prevents lost updates under concurrent attempts.
+        updated = await db.login_attempts.find_one_and_update(
+            {"identifier": identifier},
+            {"$inc": {"count": 1},
+             "$set": {"updated_at": now.isoformat()},
+             "$setOnInsert": {"identifier": identifier}},
+            upsert=True, return_document=True,
+        )
+        if updated and updated.get("count", 0) >= 5 and not updated.get("locked_until"):
+            await db.login_attempts.update_one(
+                {"identifier": identifier, "locked_until": {"$exists": False}},
+                {"$set": {"locked_until": (now + timedelta(minutes=15)).isoformat()}},
+            )
         raise HTTPException(status_code=401, detail="Invalid email or password")
 
     await db.login_attempts.delete_one({"identifier": identifier})
@@ -1911,13 +1917,31 @@ class FirmLogoIn(BaseModel):
 
 @api.put("/auth/firm-logo")
 async def upload_firm_logo(payload: FirmLogoIn, user=Depends(get_current_user)):
-    if not payload.firm_logo_data.startswith("data:image/"):
+    data = payload.firm_logo_data or ""
+    if not (data.startswith("data:image/") and "base64," in data):
         raise HTTPException(status_code=400, detail="Firm logo must be a PNG or JPEG image (data URL).")
-    if len(payload.firm_logo_data) > 700_000:
+    if len(data) > 700_000:
         raise HTTPException(status_code=400, detail="Firm logo is too large. Try under 500 KB.")
+    # Actually decode and open the image to prove it's a real PNG/JPEG.
+    try:
+        raw = base64.b64decode(data.split("base64,", 1)[1], validate=True)
+    except Exception:
+        raise HTTPException(status_code=400, detail="Firm logo is not valid base64.")
+    if len(raw) > 500_000:
+        raise HTTPException(status_code=400, detail="Firm logo is too large. Try under 500 KB.")
+    try:
+        from PIL import Image as _Image
+        img = _Image.open(io.BytesIO(raw))
+        img.verify()
+        if img.format not in ("PNG", "JPEG"):
+            raise HTTPException(status_code=400, detail="Firm logo must be a PNG or JPEG image.")
+    except HTTPException:
+        raise
+    except Exception:
+        raise HTTPException(status_code=400, detail="Firm logo file could not be decoded as an image.")
     await db.users.update_one(
         {"_id": ObjectId(user["_id"])},
-        {"$set": {"firm_logo_data": payload.firm_logo_data,
+        {"$set": {"firm_logo_data": data,
                   "firm_logo_updated_at": datetime.now(timezone.utc).isoformat()}})
     return {"ok": True}
 
@@ -2064,6 +2088,30 @@ async def list_invites(user=Depends(get_current_user)):
     return {"invites": out}
 
 
+@api.get("/invites/{invite_id}")
+async def get_invite(invite_id: str, user=Depends(get_current_user)):
+    try:
+        oid = _to_oid(invite_id)
+    except HTTPException:
+        raise HTTPException(status_code=404, detail="Invite not found")
+    d = await db.invites.find_one({"_id": oid, "invited_by_user_id": user["_id"]})
+    if not d:
+        raise HTTPException(status_code=404, detail="Invite not found")
+    return {
+        "id": str(d["_id"]),
+        "token": d["token"],
+        "email": d["email"],
+        "firm_name": d.get("firm_name"),
+        "state": d.get("state"),
+        "created_at": d.get("created_at"),
+        "expires_at": d.get("expires_at"),
+        "used_at": d.get("used_at"),
+        "email_status": d.get("email_status"),
+        "email_error": d.get("email_error"),
+        "invite_url": f"{os.environ.get('ALERT_APP_URL','').rstrip('/')}/invite/{d['token']}",
+    }
+
+
 @api.delete("/invites/{invite_id}")
 async def revoke_invite(invite_id: str, user=Depends(get_current_user)):
     result = await db.invites.delete_one(
@@ -2113,8 +2161,18 @@ async def public_invite_accept(token: str, payload: InviteAcceptIn, response: Re
     if len(payload.password) < 8:
         raise HTTPException(status_code=400, detail="Password must be at least 8 characters.")
     email = inv["email"]
-    if await db.users.find_one({"email": email}):
-        raise HTTPException(status_code=400, detail="That email already has a Notarium account.")
+
+    # Atomically claim the invite BEFORE creating the user. Only one caller
+    # can transition used_at from None to a timestamp; concurrent losers
+    # correctly get 410 instead of a duplicate-user error.
+    claim_time = datetime.now(timezone.utc).isoformat()
+    claimed = await db.invites.find_one_and_update(
+        {"token": token, "used_at": None},
+        {"$set": {"used_at": claim_time}},
+    )
+    if not claimed:
+        raise HTTPException(status_code=410, detail="This invitation has already been accepted.")
+
     user_doc = {
         "email": email,
         "password_hash": hash_password(payload.password),
@@ -2127,7 +2185,18 @@ async def public_invite_accept(token: str, payload: InviteAcceptIn, response: Re
         "created_at": datetime.now(timezone.utc).isoformat(),
         "invited_by_user_id": inv.get("invited_by_user_id"),
     }
-    result = await db.users.insert_one(user_doc)
+    try:
+        result = await db.users.insert_one(user_doc)
+    except Exception as e:
+        # users.email has a unique index; a concurrent accept from another
+        # invite for the same address (rare edge case) would race us here.
+        await db.invites.update_one(
+            {"token": token, "used_at": claim_time},
+            {"$set": {"used_at": None}},
+        )
+        if "duplicate" in str(e).lower() or "E11000" in str(e):
+            raise HTTPException(status_code=410, detail="This invitation has already been accepted.")
+        raise
     uid = str(result.inserted_id)
     for t in DEFAULT_DOC_TYPES:
         await db.document_types.insert_one({
@@ -2136,8 +2205,7 @@ async def public_invite_accept(token: str, payload: InviteAcceptIn, response: Re
         })
     await db.invites.update_one(
         {"token": token},
-        {"$set": {"used_at": datetime.now(timezone.utc).isoformat(),
-                  "accepted_user_id": uid}},
+        {"$set": {"accepted_user_id": uid}},
     )
     access = create_access_token(uid, email)
     refresh = create_refresh_token(uid)
@@ -2465,6 +2533,8 @@ async def startup():
     await db.certificate_email_log.create_index([("user_id", 1), ("entry_id", 1), ("sent_at", -1)])
     await db.cron_runs.create_index("run_id", unique=True)
     await db.login_attempts.create_index("identifier")
+    await db.invites.create_index("token", unique=True)
+    await db.users.create_index("email", unique=True)
 
     admin_email = os.environ.get("ADMIN_EMAIL", "admin@example.com").lower()
     admin_password = os.environ.get("ADMIN_PASSWORD", "admin123")
