@@ -451,6 +451,23 @@ class CheckoutIn(BaseModel):
     origin_url: str
 
 
+def _validate_origin_url(origin_url: str) -> str:
+    """Only allow the configured app URL host to prevent open-redirect via Stripe return."""
+    from urllib.parse import urlparse
+    allowed = os.environ.get("ALERT_APP_URL", "").rstrip("/")
+    try:
+        p = urlparse(origin_url)
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid origin_url")
+    if p.scheme not in ("http", "https") or not p.netloc:
+        raise HTTPException(status_code=400, detail="Invalid origin_url")
+    if allowed:
+        a = urlparse(allowed)
+        if p.netloc != a.netloc:
+            raise HTTPException(status_code=400, detail="origin_url host not allowed")
+    return f"{p.scheme}://{p.netloc}"
+
+
 @api.post("/billing/checkout")
 async def billing_checkout(payload: CheckoutIn, user=Depends(get_current_user)):
     if payload.lookup_key not in BILLING_PLANS:
@@ -475,7 +492,7 @@ async def billing_checkout(payload: CheckoutIn, user=Depends(get_current_user)):
             {"$set": {"stripe_customer_id": customer_id}},
         )
 
-    origin = payload.origin_url.rstrip("/")
+    origin = _validate_origin_url(payload.origin_url)
     session_kwargs = dict(
         customer=customer_id,
         line_items=[{"price": price.id, "quantity": 1}],
@@ -959,7 +976,7 @@ async def update_entry(entry_id: str, payload: EntryIn, user=Depends(require_act
     return serialize_entry(doc)
 
 @api.delete("/entries/{entry_id}")
-async def delete_entry(entry_id: str, user=Depends(get_current_user)):
+async def delete_entry(entry_id: str, user=Depends(require_active_subscription)):
     result = await db.entries.delete_one({"_id": ObjectId(entry_id), "user_id": user["_id"]})
     if result.deleted_count == 0:
         raise HTTPException(status_code=404, detail="Entry not found")
@@ -1874,7 +1891,7 @@ async def update_client(client_id: str, payload: ClientIn, user=Depends(require_
     return serialize_generic(doc)
 
 @api.delete("/clients/{client_id}")
-async def delete_client(client_id: str, user=Depends(get_current_user)):
+async def delete_client(client_id: str, user=Depends(require_active_subscription)):
     result = await db.clients.delete_one({"_id": ObjectId(client_id), "user_id": user["_id"]})
     if result.deleted_count == 0:
         raise HTTPException(status_code=404, detail="Client not found")
@@ -1907,7 +1924,7 @@ async def create_doc_type(payload: DocTypeIn, user=Depends(require_active_subscr
     return serialize_generic(doc)
 
 @api.delete("/document-types/{type_id}")
-async def delete_doc_type(type_id: str, user=Depends(get_current_user)):
+async def delete_doc_type(type_id: str, user=Depends(require_active_subscription)):
     result = await db.document_types.delete_one({"_id": ObjectId(type_id), "user_id": user["_id"]})
     if result.deleted_count == 0:
         raise HTTPException(status_code=404, detail="Type not found")
@@ -1962,7 +1979,7 @@ async def create_intake(payload: IntakeCreateIn, user=Depends(require_active_sub
     return _serialize_intake(doc, user.get("name", ""))
 
 @api.delete("/intakes/{intake_id}")
-async def delete_intake(intake_id: str, user=Depends(get_current_user)):
+async def delete_intake(intake_id: str, user=Depends(require_active_subscription)):
     result = await db.signer_intakes.delete_one({"_id": _to_oid(intake_id), "user_id": user["_id"]})
     if result.deleted_count == 0:
         raise HTTPException(status_code=404, detail="Intake not found")
