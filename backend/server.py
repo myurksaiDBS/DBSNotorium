@@ -529,6 +529,9 @@ async def alerts_status(user=Depends(get_current_user)):
         alert_date = expires_on - timedelta(days=b)
         if alert_date >= today:
             upcoming.append({"days_out": b, "on": alert_date.isoformat()})
+    # ALERT_BUCKETS is ascending for tightest-threshold selection, but users
+    # expect the soonest reminder at the top of the list.
+    upcoming.sort(key=lambda a: a["days_out"], reverse=True)
     return {
         "configured": True,
         "enabled": user.get("alerts_enabled", True),
@@ -845,17 +848,20 @@ def _render_certificate_pdf(entry: dict, notary: dict) -> bytes:
     return buf.read()
 
 async def _get_entry_certificate_token(entry_id_obj: ObjectId) -> str:
-    """Ensure the entry has a certificate_token; return it."""
-    doc = await db.entries.find_one({"_id": entry_id_obj}, {"certificate_token": 1})
-    if doc and doc.get("certificate_token"):
-        return doc["certificate_token"]
+    """Ensure the entry has a certificate_token; return it. Atomic under concurrency."""
+    # Conditional update: only set the token if none exists yet. If another
+    # caller wrote first, this returns None and we re-read the winning token.
     token = _secrets.token_urlsafe(20)
-    await db.entries.update_one(
-        {"_id": entry_id_obj},
+    updated = await db.entries.find_one_and_update(
+        {"_id": entry_id_obj, "certificate_token": {"$exists": False}},
         {"$set": {"certificate_token": token,
                   "certificate_token_created_at": datetime.now(timezone.utc).isoformat()}},
     )
-    return token
+    if updated is not None:
+        return token
+    # A concurrent writer won; re-read whatever token actually persisted.
+    doc = await db.entries.find_one({"_id": entry_id_obj}, {"certificate_token": 1})
+    return (doc or {}).get("certificate_token") or token
 
 @api.get("/entries/{entry_id}/certificate.pdf")
 async def download_certificate(entry_id: str, user=Depends(get_current_user)):

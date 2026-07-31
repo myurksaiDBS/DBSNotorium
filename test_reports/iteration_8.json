@@ -1,0 +1,30 @@
+{
+  "summary": "Final focused backend re-verification passed both iteration 7 open items against the public API: concurrent first certificate emails shared one persisted token, and 45-day upcoming alerts were ordered [30, 14, 7, 1, 0].",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/backend_test.py",
+    "/app/test_reports/pytest/certificate_atomic_alert_order_iteration8.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [],
+  "updated_files": [
+    "/app/test_reports/iteration_8.json"
+  ],
+  "success_rate": {
+    "backend": "100% (2/2 focused tests passed)",
+    "frontend": "Skipped per request"
+  },
+  "seed_data_creation": "Created one temporary fresh TEST certificate entry and its auto-created client, sent exactly two real certificate emails to matthew.yurksaitis@dominibusservices.com in parallel, verified both 200 responses had the same certificate_url and MongoDB stored that token, then deleted the entry and TEST client data. The commission expiration test state was restored by fixture teardown.",
+  "should_call_test_agent_after_fix": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Both iteration_7 open defects are closed. Focused pytest selectors passed against REACT_APP_BACKEND_URL. PDF and email HTML escaping remained out of scope because they already passed iteration_7.",
+  "rca_of_the_issue": "The corrected certificate helper uses a conditional find_one_and_update so only one concurrent caller persists a new token; the losing caller re-reads that winning token. alerts_status now explicitly sorts upcoming_alerts by days_out descending while preserving ascending ALERT_BUCKETS for bucket selection."
+}
