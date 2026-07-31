@@ -289,11 +289,14 @@ def register_billing(api, db, get_current_user):
             body = await request.json()
         except Exception:
             pass
-        origin = (body or {}).get("origin_url") or os.environ.get("ALERT_APP_URL", "")
+        raw_origin = (body or {}).get("origin_url") or os.environ.get("ALERT_APP_URL", "")
+        # Reuse the same allowlist as checkout — prevents open-redirect via
+        # Stripe's return_url when the caller can pick the origin.
+        origin = _validate_origin_url(raw_origin)
         try:
             portal = stripe.billing_portal.Session.create(
                 customer=customer_id,
-                return_url=f"{origin.rstrip('/')}/settings?tab=billing",
+                return_url=f"{origin}/settings?tab=billing",
             )
         except stripe.error.InvalidRequestError as e:
             raise HTTPException(status_code=500, detail=f"Stripe portal error: {e.user_message or str(e)}")
