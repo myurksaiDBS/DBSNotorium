@@ -240,17 +240,19 @@ export default function Settings() {
                 </p>
               </div>
             </div>
+            {checklist.state_customized && (
+              <div className="text-right mr-4" data-testid="checklist-state-badge">
+                <div className="text-[10px] uppercase tracking-widest text-[#DF0D1B] bg-[#FDECEC] border border-[#F4B4B4] px-2 py-0.5 rounded-sm inline-block">
+                  State-Specific
+                </div>
+              </div>
+            )}
             {checklist.unlocked && (
               <div className="text-right">
                 <div className="font-mono-plex text-2xl text-[#00317A]" data-testid="checklist-progress">
                   {checklist.completed_count}/{checklist.total_count}
                 </div>
                 <div className="text-[10px] uppercase tracking-widest text-[#4B5563]">Done</div>
-                {checklist.state_customized && (
-                  <div className="mt-2 text-[10px] uppercase tracking-widest text-[#DF0D1B]" data-testid="checklist-state-badge">
-                    State-Specific
-                  </div>
-                )}
               </div>
             )}
           </div>
