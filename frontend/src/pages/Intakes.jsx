@@ -9,8 +9,9 @@ import { Textarea } from "@/components/ui/textarea";
 import { Badge } from "@/components/ui/badge";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter, DialogDescription } from "@/components/ui/dialog";
-import { Plus, Copy, Trash2, MessageSquare, ArrowRight, Link2 } from "lucide-react";
+import { Plus, Copy, Trash2, MessageSquare, ArrowRight, Link2, QrCode } from "lucide-react";
 import { toast } from "sonner";
+import { API } from "@/api";
 
 const STATUS_STYLE = {
   pending:   { label: "Awaiting signer", cls: "bg-[#FEF9EC] text-[#7A5B00] border-[#F0D28A]" },
@@ -69,6 +70,18 @@ export default function Intakes() {
   const copySMS = (item) => {
     navigator.clipboard.writeText(smsBody(item));
     toast.success("Message copied");
+  };
+
+  const downloadPoster = async (item) => {
+    const url = `${API}/intakes/${item.id}/qr-poster.pdf`;
+    const res = await fetch(url, { credentials: "include" });
+    if (!res.ok) { toast.error("Failed to download poster"); return; }
+    const blob = await res.blob();
+    const link = document.createElement("a");
+    link.href = URL.createObjectURL(blob);
+    link.download = `intake-poster-${item.id.slice(-8)}.pdf`;
+    document.body.appendChild(link); link.click(); link.remove();
+    toast.success("Poster downloaded");
   };
 
   const openEntryFromIntake = async (item) => {
@@ -221,6 +234,28 @@ export default function Intakes() {
                        data-testid="open-sms-btn">
                       <MessageSquare className="w-4 h-4 mr-1" /> Open in Messages
                     </a>
+                  </div>
+                </div>
+                <div className="pt-3 border-t border-[#E2E8F0]">
+                  <Label className="text-[10px] uppercase tracking-widest text-[#4B5563]">Walk-in / print</Label>
+                  <div className="mt-2 flex items-center gap-3">
+                    <img
+                      src={`${API}/intakes/${detail.id}/qr.png`}
+                      alt="QR"
+                      className="w-20 h-20 border border-[#E2E8F0] rounded-sm p-1 bg-white"
+                      data-testid="intake-qr-preview"
+                    />
+                    <div className="flex-1">
+                      <p className="text-xs text-[#4B5563] leading-relaxed mb-2">
+                        Print a Domini-branded QR poster so walk-in signers can scan and pre-fill on their phone.
+                      </p>
+                      <Button type="button"
+                        onClick={() => downloadPoster(detail)}
+                        className="rounded-sm bg-[#00317A] hover:bg-[#00265E] text-white"
+                        data-testid="download-poster-btn">
+                        <QrCode className="w-4 h-4 mr-1.5" /> Download QR Poster (PDF)
+                      </Button>
+                    </div>
                   </div>
                 </div>
                 {detail.status === "completed" && detail.data && (

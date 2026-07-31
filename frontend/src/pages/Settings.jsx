@@ -7,7 +7,8 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
 import { Badge } from "@/components/ui/badge";
-import { BellRing, Send, Mail } from "lucide-react";
+import { Checkbox } from "@/components/ui/checkbox";
+import { BellRing, Send, Mail, ListChecks, Lock } from "lucide-react";
 import { toast } from "sonner";
 
 export default function Settings() {
@@ -22,6 +23,7 @@ export default function Settings() {
   const [saving, setSaving] = useState(false);
   const [alertsStatus, setAlertsStatus] = useState(null);
   const [testing, setTesting] = useState(false);
+  const [checklist, setChecklist] = useState(null);
 
   const loadStatus = async () => {
     try {
@@ -29,7 +31,28 @@ export default function Settings() {
       setAlertsStatus(data);
     } catch { /* no-op */ }
   };
-  useEffect(() => { loadStatus(); }, []);
+  const loadChecklist = async () => {
+    try {
+      const { data } = await api.get("/renewal-checklist");
+      setChecklist(data);
+    } catch { /* no-op */ }
+  };
+  useEffect(() => { loadStatus(); loadChecklist(); }, []);
+
+  const toggleChecklistItem = async (id, done) => {
+    // Optimistic update
+    setChecklist((c) => c && {
+      ...c,
+      items: c.items.map((it) => it.id === id ? { ...it, completed: done } : it),
+      completed_count: c.completed_count + (done ? 1 : -1),
+    });
+    try {
+      await api.post("/renewal-checklist/toggle", { item_id: id, done });
+    } catch (e) {
+      toast.error("Could not update — try again");
+      loadChecklist();
+    }
+  };
 
   const save = async (e) => {
     e.preventDefault();
@@ -197,6 +220,78 @@ export default function Settings() {
         <div className="text-[10px] uppercase tracking-widest text-[#991B1B] mb-2">Signed in as</div>
         <div className="text-[#00317A] font-medium">{user?.email}</div>
       </Card>
+
+      {/* Renewal Checklist */}
+      {checklist && (
+        <Card className="p-6 border-[#E2E8F0] rounded-sm shadow-none bg-white" data-testid="renewal-checklist-card">
+          <div className="flex items-start justify-between mb-4 pb-4 border-b border-[#E2E8F0]">
+            <div className="flex items-start gap-3">
+              <div className="w-10 h-10 rounded-sm bg-[#EEF2FB] flex items-center justify-center shrink-0">
+                {checklist.unlocked
+                  ? <ListChecks className="w-5 h-5 text-[#00317A]" />
+                  : <Lock className="w-5 h-5 text-[#4B5563]" />}
+              </div>
+              <div>
+                <div className="text-[10px] uppercase tracking-[0.25em] text-[#DF0D1B] mb-1">Countdown</div>
+                <div className="font-serif text-2xl text-[#00317A]">Renewal Checklist</div>
+                <p className="text-xs text-[#4B5563] mt-1 max-w-xl">
+                  Tailored to <span className="font-medium text-[#111827]">{checklist.state}</span>. Unlocks
+                  once you're within 30 days of your commission expiration.
+                </p>
+              </div>
+            </div>
+            {checklist.unlocked && (
+              <div className="text-right">
+                <div className="font-mono-plex text-2xl text-[#00317A]" data-testid="checklist-progress">
+                  {checklist.completed_count}/{checklist.total_count}
+                </div>
+                <div className="text-[10px] uppercase tracking-widest text-[#4B5563]">Done</div>
+              </div>
+            )}
+          </div>
+
+          {!checklist.unlocked ? (
+            <div className="p-5 bg-[#F4F7F9] rounded-sm border border-[#E2E8F0] text-sm text-[#4B5563]" data-testid="checklist-locked-notice">
+              <div className="flex items-center gap-2 text-[#00317A] font-medium mb-1">
+                <Lock className="w-4 h-4" /> Locked
+              </div>
+              {checklist.days_left != null ? (
+                <>Your renewal checklist opens automatically {checklist.days_left - 30} days from now — when your commission is 30 days from expiring.</>
+              ) : (
+                <>Add your commission expiration date above to schedule your renewal checklist.</>
+              )}
+            </div>
+          ) : (
+            <ul className="space-y-3" data-testid="checklist-items">
+              {checklist.items.map((it, idx) => (
+                <li key={it.id}
+                    data-testid={`checklist-item-${it.id}`}
+                    className={`flex items-start gap-3 p-3 rounded-sm border transition-colors ${
+                      it.completed
+                        ? "bg-[#F1FAF3] border-[#B7E0C1]"
+                        : "bg-white border-[#E2E8F0] hover:border-[#00317A]/30"
+                    }`}>
+                  <Checkbox
+                    checked={it.completed}
+                    onCheckedChange={(v) => toggleChecklistItem(it.id, !!v)}
+                    className="mt-0.5 data-[state=checked]:bg-[#00317A] data-[state=checked]:border-[#00317A]"
+                    data-testid={`checklist-checkbox-${it.id}`}
+                  />
+                  <div className="flex-1 min-w-0">
+                    <div className="flex items-baseline gap-2">
+                      <span className="font-mono-plex text-[10px] text-[#4B5563]">{String(idx+1).padStart(2,'0')}</span>
+                      <span className={`text-sm ${it.completed ? "text-[#146334] line-through" : "text-[#111827]"} font-medium`}>
+                        {it.title}
+                      </span>
+                    </div>
+                    {it.detail && <div className="text-xs text-[#4B5563] mt-1 ml-6">{it.detail}</div>}
+                  </div>
+                </li>
+              ))}
+            </ul>
+          )}
+        </Card>
+      )}
     </div>
   );
 }

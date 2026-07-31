@@ -1,0 +1,47 @@
+{
+  "summary": "Tested all three new Notarium features against the public app. Renewal lock/unlock/toggle persistence, certificate audit writes (sent and failed), history sorting/security, valid QR PNG payload, one-page branded QR poster, and all requested frontend flows passed. One API edge defect was reproduced: email history is empty when the same valid ObjectId is supplied in uppercase hex.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {
+        "endpoint": "GET /api/entries/{id}/email-history",
+        "issue": "A valid uppercase-hex ObjectId resolves the owned entry but returns [] instead of its audit rows. Lowercase IDs return the rows correctly.",
+        "priority": "HIGH"
+      }
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/backend_test.py",
+    "/app/test_reports/pytest/notarium_features_iteration9.xml",
+    "/app/test_reports/pytest/notarium_email_history_case_iteration9.xml",
+    "/app/test_reports/pytest/notarium_regression_iteration9.xml"
+  ],
+  "action_items": [
+    "In entry_email_history, query certificate_email_log with str(entry_oid) rather than the raw route entry_id, then rerun the focused uppercase-ID test.",
+    "Add explicit loading/error states for renewal checklist and email history requests; current catch blocks silently hide failures, and Journal renders a retrieval failure as 'No emails sent yet'.",
+    "Split backend/server.py (1,655 lines) into focused auth, journal/certificate, intake, alert/checklist, and PDF modules."
+  ],
+  "critical_code_review_comments": [
+    "entry_email_history validates to entry_oid but filters certificate_email_log using the original case-sensitive entry_id string. ObjectId lookup is hex-case-insensitive, while the audit log stores a lowercase string, causing the reproduced empty result.",
+    "Settings.loadChecklist and Journal.loadEmailHistory swallow API errors. The latter actively converts an audit API failure to an empty-history state, which can mislead users reviewing delivery evidence.",
+    "backend/server.py exceeds the 700-line maintainability limit by more than 2x and combines unrelated routing, email, auth, MongoDB, and PDF rendering concerns."
+  ],
+  "updated_files": [
+    "/app/backend/tests/backend_test.py",
+    "/app/test_reports/iteration_9.json"
+  ],
+  "success_rate": {
+    "backend": "83% (5/6 selected feature/regression tests passed; 1 valid-ID normalization edge case failed)",
+    "frontend": "100% (3/3 end-to-end feature flows passed)"
+  },
+  "seed_data_creation": "Created and removed temporary foreign user/resource data, journal entries, clients, and intake links. Restored commission expiration to today+45 days and restored prior checklist progress. Two UI audit rows intentionally remain on seeded entry 6a6cde7c8a474af388bb1d66 (one sent to the admin and one expected Resend rejection) so the new audit trail remains visible. Two actual emails were successfully sent in total; provider-rejection attempts did not deliver.",
+  "should_call_test_agent_after_fix": true,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Core requested behavior passed. Re-run only TestNotariumIteration9Features::test_email_history_accepts_equivalent_uppercase_object_id after canonicalizing the history query. The combined new-feature XML has 3/3 passing; the separate case XML contains the one failure. UI verified locked notice at 45 days, 10 unlocked items at 25 days, optimistic/persisted toggle, Sent/Failed history rendering and empty state, QR preview/poster download, public intake submission, Journal prefill, dashboard, certificate download, PDF export, login/logout. /app/auth_testing.md was absent, but shared credentials were read successfully.",
+  "rca_of_the_issue": "Reproduction: create an owned entry and one certificate_email_log row using its normal lowercase 24-char ID, then request /api/entries/{ID.upper()}/email-history. MongoDB ObjectId(entry_id) finds the entry, but the history query uses {entry_id: raw_route_string}; certificate_email_log stores the lowercase string, so the case-sensitive string filter finds no rows. Normalize the filter to str(entry_oid)."
+}

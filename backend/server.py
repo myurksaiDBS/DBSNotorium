@@ -11,6 +11,8 @@ import asyncio
 import hmac
 import httpx
 import html as _html
+import qrcode
+from qrcode.image.pil import PilImage
 from datetime import datetime, timezone, timedelta, date
 from typing import List, Optional, Annotated
 
@@ -968,6 +970,18 @@ async def email_certificate(entry_id: str, payload: CertificateEmailIn,
   </td></tr>
 </table></body></html>"""
     email_id, err = await _send_email(payload.to, subject, html, reply_to=user["email"])
+    # Persist every attempt to the audit trail — successes AND failures.
+    log_entry = {
+        "user_id": user["_id"],
+        "entry_id": str(entry_oid),
+        "to": payload.to,
+        "subject": subject,
+        "email_id": email_id,
+        "error": err,
+        "status": "sent" if email_id else "failed",
+        "sent_at": datetime.now(timezone.utc).isoformat(),
+    }
+    await db.certificate_email_log.insert_one(log_entry)
     if not email_id:
         raise HTTPException(status_code=400, detail=err or "Could not send certificate email.")
     await db.entries.update_one(
@@ -979,6 +993,244 @@ async def email_certificate(entry_id: str, payload: CertificateEmailIn,
         }})
     return {"ok": True, "email_id": email_id, "sent_to": payload.to,
             "certificate_url": cert_url}
+
+@api.get("/entries/{entry_id}/email-history")
+async def entry_email_history(entry_id: str, user=Depends(get_current_user)):
+    entry_oid = _to_oid(entry_id)
+    # Make sure the entry belongs to this notary before exposing history.
+    entry = await db.entries.find_one({"_id": entry_oid, "user_id": user["_id"]},
+                                      {"_id": 1})
+    if not entry:
+        raise HTTPException(status_code=404, detail="Entry not found")
+    docs = await db.certificate_email_log.find(
+        {"user_id": user["_id"], "entry_id": entry_id}
+    ).sort("sent_at", -1).to_list(200)
+    return [{
+        "id": str(d["_id"]),
+        "to": d.get("to"),
+        "subject": d.get("subject"),
+        "status": d.get("status"),
+        "email_id": d.get("email_id"),
+        "error": d.get("error"),
+        "sent_at": d.get("sent_at"),
+    } for d in docs]
+
+# ---- Renewal Checklist ----
+# Ten shared steps applicable to any US notary renewal. Descriptions reference
+# the notary's own state at render-time. Items unlock once the notary hits the
+# 30-day (or tighter) alert bucket so the reminder feels earned, not nagged.
+RENEWAL_CHECKLIST_ITEMS = [
+    {"id": "window",       "title": "Confirm your renewal window",
+     "detail": "Most Secretary of State offices allow renewals up to 60 days before your commission expires."},
+    {"id": "education",    "title": "Complete required continuing education or refresher course",
+     "detail": "Check your state's mandated CE hours and preferred provider list."},
+    {"id": "exam",         "title": "Pass the state-mandated notary exam (if applicable)",
+     "detail": "Some states require a proctored exam on every renewal."},
+    {"id": "bond",         "title": "Order or renew your notary bond",
+     "detail": "Bond amounts vary by state — verify current requirements."},
+    {"id": "insurance",    "title": "Renew your Errors & Omissions (E&O) insurance",
+     "detail": "Not required by every state but strongly recommended."},
+    {"id": "application",  "title": "Submit renewal application and fee to your Secretary of State",
+     "detail": "Include background check documents where required."},
+    {"id": "certificate",  "title": "Receive your new commission certificate and file it with your county clerk (if required)",
+     "detail": "Filing rules vary by county — verify locally."},
+    {"id": "seal",         "title": "Order a new notary seal / stamp with the new commission dates",
+     "detail": "Do not use your old seal after the new commission takes effect."},
+    {"id": "journal",      "title": "Note the new commission expiration in your paper journal",
+     "detail": "Some states require carrying over case numbers to a fresh journal."},
+    {"id": "notarium",     "title": "Update Notarium with the new commission number and expiration",
+     "detail": "This keeps your PDF exports and certificates accurate."},
+]
+_CHECKLIST_IDS = {i["id"] for i in RENEWAL_CHECKLIST_ITEMS}
+
+def _renewal_unlocked(user: dict) -> tuple[bool, Optional[int]]:
+    """Unlock once notary reaches the 30-day (or tighter) alert bucket."""
+    expires_on = _parse_commission_date(user.get("commission_expires"))
+    if not expires_on:
+        return False, None
+    days_left = (expires_on - datetime.now(timezone.utc).date()).days
+    return (days_left <= 30), days_left
+
+@api.get("/renewal-checklist")
+async def renewal_checklist(user=Depends(get_current_user)):
+    unlocked, days_left = _renewal_unlocked(user)
+    completed = set(user.get("renewal_checklist_progress", []))
+    items = [{
+        "id": it["id"],
+        "title": it["title"],
+        "detail": it["detail"],
+        "completed": it["id"] in completed,
+    } for it in RENEWAL_CHECKLIST_ITEMS]
+    return {
+        "unlocked": unlocked,
+        "days_left": days_left,
+        "state": user.get("state") or "your state",
+        "commission_expires": user.get("commission_expires"),
+        "items": items,
+        "completed_count": len([i for i in items if i["completed"]]),
+        "total_count": len(items),
+    }
+
+class ChecklistToggleIn(BaseModel):
+    item_id: str
+    done: bool
+
+@api.post("/renewal-checklist/toggle")
+async def toggle_renewal_item(payload: ChecklistToggleIn, user=Depends(get_current_user)):
+    if payload.item_id not in _CHECKLIST_IDS:
+        raise HTTPException(status_code=400, detail="Unknown checklist item")
+    op = "$addToSet" if payload.done else "$pull"
+    await db.users.update_one(
+        {"_id": ObjectId(user["_id"])},
+        {op: {"renewal_checklist_progress": payload.item_id}})
+    return {"ok": True}
+
+# ---- Intake QR poster ----
+def _make_qr_png(url: str, box_size: int = 12, border: int = 2) -> bytes:
+    """Return PNG bytes of a QR code encoding url. High error correction so a
+    printed poster can lose some ink and still scan."""
+    qr = qrcode.QRCode(
+        version=None,
+        error_correction=qrcode.constants.ERROR_CORRECT_H,
+        box_size=box_size, border=border,
+    )
+    qr.add_data(url)
+    qr.make(fit=True)
+    img = qr.make_image(fill_color="#00317A", back_color="white",
+                        image_factory=PilImage)
+    buf = io.BytesIO()
+    img.get_image().save(buf, format="PNG")
+    return buf.getvalue()
+
+def _render_intake_poster_pdf(intake: dict, notary: dict, url: str) -> bytes:
+    from reportlab.lib.pagesizes import letter as _letter
+    esc = _html.escape
+    page_w, page_h = _letter
+    buf = io.BytesIO()
+
+    def stamp(canvas, _doc):
+        _draw_domini_stamp(canvas, page_w, page_h, _doc.page)
+
+    doc = SimpleDocTemplate(buf, pagesize=_letter,
+                            rightMargin=0.75*inch, leftMargin=0.75*inch,
+                            topMargin=0.6*inch, bottomMargin=0.75*inch)
+    styles = getSampleStyleSheet()
+    eyebrow = ParagraphStyle('e', parent=styles['Normal'], fontSize=9,
+                             textColor=colors.HexColor("#DF0D1B"),
+                             fontName="Helvetica-Bold", spaceAfter=6, leading=11,
+                             alignment=TA_CENTER)
+    headline = ParagraphStyle('h', parent=styles['Title'], fontSize=34,
+                              textColor=colors.HexColor("#00317A"),
+                              fontName="Helvetica-Bold", alignment=TA_CENTER,
+                              leading=38, spaceAfter=10)
+    sub = ParagraphStyle('s', parent=styles['Normal'], fontSize=14,
+                         textColor=colors.HexColor("#111827"),
+                         alignment=TA_CENTER, leading=20, spaceAfter=20)
+    step = ParagraphStyle('st', parent=styles['Normal'], fontSize=12,
+                          textColor=colors.HexColor("#111827"), leading=17,
+                          spaceAfter=6, alignment=TA_LEFT)
+    url_style = ParagraphStyle('u', parent=styles['Normal'], fontSize=9,
+                               textColor=colors.HexColor("#4B5563"),
+                               alignment=TA_CENTER, fontName="Courier")
+
+    elems = []
+    elems.append(Paragraph("SIGNER INTAKE", eyebrow))
+    elems.append(Paragraph("Scan to complete your details", headline))
+    subtitle = f"Before we meet, please share your name, address and ID with {esc(notary.get('name','your notary'))}."
+    elems.append(Paragraph(subtitle, sub))
+
+    # QR image inside a bordered card
+    qr_bytes = _make_qr_png(url, box_size=14, border=2)
+    qr_img = RLImage(io.BytesIO(qr_bytes), width=3.8*inch, height=3.8*inch)
+    qr_card = Table([[qr_img]], colWidths=[6.5*inch])
+    qr_card.setStyle(TableStyle([
+        ('ALIGN', (0,0), (-1,-1), 'CENTER'),
+        ('VALIGN', (0,0), (-1,-1), 'MIDDLE'),
+        ('BOX', (0,0), (-1,-1), 1, colors.HexColor("#00317A")),
+        ('BACKGROUND', (0,0), (-1,-1), colors.HexColor("#F4F7F9")),
+        ('TOPPADDING', (0,0), (-1,-1), 22),
+        ('BOTTOMPADDING', (0,0), (-1,-1), 22),
+    ]))
+    elems.append(qr_card)
+    elems.append(Spacer(1, 0.15*inch))
+    elems.append(Paragraph(f"Or open: {esc(url)}", url_style))
+    elems.append(Spacer(1, 0.25*inch))
+
+    # Steps
+    steps_bar = Table(
+        [[Paragraph("HOW IT WORKS", ParagraphStyle('lbl', parent=styles['Normal'],
+                                                    fontSize=8.5, textColor=colors.white,
+                                                    fontName="Helvetica-Bold",
+                                                    alignment=TA_LEFT, leading=11))]],
+        colWidths=[6.5*inch],
+    )
+    steps_bar.setStyle(TableStyle([
+        ('BACKGROUND', (0,0), (-1,-1), colors.HexColor("#00317A")),
+        ('LEFTPADDING', (0,0), (-1,-1), 12),
+        ('TOPPADDING', (0,0), (-1,-1), 6),
+        ('BOTTOMPADDING', (0,0), (-1,-1), 6),
+    ]))
+    elems.append(steps_bar)
+    steps_html = (
+        '1. &nbsp; Point your phone camera at the QR code above.<br/>'
+        '2. &nbsp; Fill in your legal name, address and ID details.<br/>'
+        '3. &nbsp; Tap "Send to my Notary" — you\'re done. Bring your ID to the appointment.'
+    )
+    steps_table = Table(
+        [[Paragraph(steps_html, step)]],
+        colWidths=[6.5*inch],
+    )
+    steps_table.setStyle(TableStyle([
+        ('BOX', (0,0), (-1,-1), 0.5, colors.HexColor("#E2E8F0")),
+        ('TOPPADDING', (0,0), (-1,-1), 14),
+        ('BOTTOMPADDING', (0,0), (-1,-1), 14),
+        ('LEFTPADDING', (0,0), (-1,-1), 16),
+    ]))
+    elems.append(steps_table)
+    if intake.get("appointment_note"):
+        elems.append(Spacer(1, 0.2*inch))
+        note = Table(
+            [[Paragraph(f"<b>Note:</b> {esc(intake['appointment_note'])}", step)]],
+            colWidths=[6.5*inch],
+        )
+        note.setStyle(TableStyle([
+            ('BACKGROUND', (0,0), (-1,-1), colors.HexColor("#FEF9EC")),
+            ('BOX', (0,0), (-1,-1), 0.5, colors.HexColor("#F0D28A")),
+            ('TOPPADDING', (0,0), (-1,-1), 12),
+            ('BOTTOMPADDING', (0,0), (-1,-1), 12),
+            ('LEFTPADDING', (0,0), (-1,-1), 14),
+            ('RIGHTPADDING', (0,0), (-1,-1), 14),
+        ]))
+        elems.append(note)
+
+    doc.build(elems, onFirstPage=stamp, onLaterPages=stamp)
+    buf.seek(0)
+    return buf.read()
+
+@api.get("/intakes/{intake_id}/qr-poster.pdf")
+async def intake_qr_poster(intake_id: str, user=Depends(get_current_user)):
+    intake = await db.signer_intakes.find_one(
+        {"_id": _to_oid(intake_id), "user_id": user["_id"]})
+    if not intake:
+        raise HTTPException(status_code=404, detail="Intake not found")
+    app_url = os.environ.get("ALERT_APP_URL", "").rstrip("/")
+    public_url = f"{app_url}/intake/{intake['token']}"
+    pdf = _render_intake_poster_pdf(intake, user, public_url)
+    return StreamingResponse(
+        io.BytesIO(pdf), media_type="application/pdf",
+        headers={"Content-Disposition":
+                 f'attachment; filename="intake-poster-{intake_id[-8:]}.pdf"'})
+
+@api.get("/intakes/{intake_id}/qr.png")
+async def intake_qr_png(intake_id: str, user=Depends(get_current_user)):
+    intake = await db.signer_intakes.find_one(
+        {"_id": _to_oid(intake_id), "user_id": user["_id"]})
+    if not intake:
+        raise HTTPException(status_code=404, detail="Intake not found")
+    app_url = os.environ.get("ALERT_APP_URL", "").rstrip("/")
+    public_url = f"{app_url}/intake/{intake['token']}"
+    png = _make_qr_png(public_url)
+    return StreamingResponse(io.BytesIO(png), media_type="image/png")
 
 # ---- Dashboard stats ----
 @api.get("/stats/dashboard")
@@ -1352,6 +1604,7 @@ async def startup():
     await db.signer_intakes.create_index([("user_id", 1), ("created_at", -1)])
     # Certificate tokens are optional; use a sparse index so many nulls are fine.
     await db.entries.create_index("certificate_token", unique=True, sparse=True)
+    await db.certificate_email_log.create_index([("user_id", 1), ("entry_id", 1), ("sent_at", -1)])
     await db.cron_runs.create_index("run_id", unique=True)
     await db.login_attempts.create_index("identifier")
 

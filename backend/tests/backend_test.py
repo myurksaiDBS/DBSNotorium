@@ -1082,3 +1082,413 @@ class TestEntryCertificateFixesIteration7:
         assert [item["on"] for item in data["upcoming_alerts"]] == sorted(
             item["on"] for item in data["upcoming_alerts"]
         )
+
+
+# Iteration 9: renewal checklist, certificate email audit history, and intake QR poster APIs.
+@pytest.fixture(scope="class")
+def foreign_notary_account():
+    """Create a second notary to verify owner isolation, then remove all test data."""
+    session = requests.Session()
+    session.headers.update({"Content-Type": "application/json"})
+    email = f"test.foreign.{uuid.uuid4().hex}@gmail.com"
+    response = session.post(
+        f"{BASE_URL}/api/auth/register",
+        json={"email": email, "password": "TEST_Notary_2026!", "name": "TEST Foreign Notary"},
+        timeout=20,
+    )
+    assert response.status_code == 200, response.text
+    account = {**response.json(), "session": session}
+    yield account
+
+    async def cleanup(database):
+        user = await database.users.find_one({"email": email})
+        if not user:
+            return
+        user_id = str(user["_id"])
+        foreign_entries = await database.entries.find({"user_id": user_id}, {"_id": 1}).to_list(100)
+        entry_ids = [str(row["_id"]) for row in foreign_entries]
+        if entry_ids:
+            await database.certificate_email_log.delete_many({"entry_id": {"$in": entry_ids}})
+        await database.entries.delete_many({"user_id": user_id})
+        await database.clients.delete_many({"user_id": user_id})
+        await database.document_types.delete_many({"user_id": user_id})
+        await database.signer_intakes.delete_many({"user_id": user_id})
+        await database.login_attempts.delete_many({"identifier": {"$regex": f"{re.escape(email)}$"}})
+        await database.users.delete_one({"_id": user["_id"]})
+
+    _db_call(cleanup)
+
+
+class TestNotariumIteration9Features:
+    """Renewal checklist, email audit log, QR image/poster, ownership and validation tests."""
+
+    @staticmethod
+    def _entry_payload(signer_name):
+        return {
+            "entry_date": datetime.now(timezone.utc).isoformat(),
+            "notarization_type": "Acknowledgment",
+            "document_type": "Affidavit",
+            "document_description": "TEST iteration 9 certificate history",
+            "signer_name": signer_name,
+            "signer_address": "123 QA Avenue",
+            "signer_phone": "",
+            "signer_email": "",
+            "id_type": "State ID",
+            "id_number": "TEST-HISTORY-0726",
+            "id_expiration": "2029-07-31",
+            "id_issued_by": "PA",
+            "witness_name": "",
+            "fee": 1.00,
+            "notes": "TEST audit trail",
+            "signature_data": "",
+        }
+
+    def test_renewal_lock_unlock_toggle_persistence_and_validation(
+            self, authenticated_client, credentials):
+        email = credentials["email"]
+        original = _get_admin(email)
+        assert original is not None
+        original_progress_exists = "renewal_checklist_progress" in original
+        original_progress = original.get("renewal_checklist_progress", [])
+        today = datetime.now(timezone.utc).date()
+        locked_expiry = (today + timedelta(days=45)).isoformat()
+        unlocked_expiry = (today + timedelta(days=25)).isoformat()
+        endpoint = f"{BASE_URL}/api/renewal-checklist"
+        try:
+            unauthenticated = requests.get(endpoint, timeout=20)
+            assert unauthenticated.status_code == 401
+            assert unauthenticated.json()["detail"] == "Not authenticated"
+
+            locked_profile = authenticated_client.put(
+                f"{BASE_URL}/api/auth/profile",
+                json={"commission_expires": locked_expiry},
+                timeout=20,
+            )
+            assert locked_profile.status_code == 200, locked_profile.text
+            locked = authenticated_client.get(endpoint, timeout=20)
+            assert locked.status_code == 200, locked.text
+            locked_data = locked.json()
+            assert locked_data["unlocked"] is False
+            assert locked_data["days_left"] == 45
+            assert locked_data["commission_expires"] == locked_expiry
+            assert locked_data["state"] == locked_profile.json()["state"]
+            assert locked_data["total_count"] == 10
+            assert len(locked_data["items"]) == 10
+            assert len({item["id"] for item in locked_data["items"]}) == 10
+            assert all(set(item) == {"id", "title", "detail", "completed"}
+                       for item in locked_data["items"])
+
+            unlocked_profile = authenticated_client.put(
+                f"{BASE_URL}/api/auth/profile",
+                json={"commission_expires": unlocked_expiry},
+                timeout=20,
+            )
+            assert unlocked_profile.status_code == 200, unlocked_profile.text
+            unlocked = authenticated_client.get(endpoint, timeout=20)
+            assert unlocked.status_code == 200, unlocked.text
+            unlocked_data = unlocked.json()
+            assert unlocked_data["unlocked"] is True
+            assert unlocked_data["days_left"] == 25
+            assert unlocked_data["state"] == unlocked_profile.json()["state"]
+            assert len(unlocked_data["items"]) == unlocked_data["total_count"] == 10
+
+            item_id = unlocked_data["items"][0]["id"]
+            enabled = authenticated_client.post(
+                f"{endpoint}/toggle", json={"item_id": item_id, "done": True}, timeout=20
+            )
+            assert enabled.status_code == 200 and enabled.json() == {"ok": True}
+            persisted_on = authenticated_client.get(endpoint, timeout=20).json()
+            assert next(item for item in persisted_on["items"] if item["id"] == item_id)["completed"] is True
+            assert item_id in _get_admin(email).get("renewal_checklist_progress", [])
+
+            unknown = authenticated_client.post(
+                f"{endpoint}/toggle",
+                json={"item_id": "TEST_unknown_item", "done": True},
+                timeout=20,
+            )
+            assert unknown.status_code == 400
+            assert unknown.json()["detail"] == "Unknown checklist item"
+
+            disabled = authenticated_client.post(
+                f"{endpoint}/toggle", json={"item_id": item_id, "done": False}, timeout=20
+            )
+            assert disabled.status_code == 200 and disabled.json() == {"ok": True}
+            persisted_off = authenticated_client.get(endpoint, timeout=20).json()
+            assert next(item for item in persisted_off["items"] if item["id"] == item_id)["completed"] is False
+            assert item_id not in _get_admin(email).get("renewal_checklist_progress", [])
+        finally:
+            # The requested shared admin baseline is 45 days out after testing.
+            authenticated_client.put(
+                f"{BASE_URL}/api/auth/profile",
+                json={"commission_expires": locked_expiry},
+                timeout=20,
+            )
+            if original_progress_exists:
+                _update_admin(email, set_values={"renewal_checklist_progress": original_progress})
+            else:
+                _update_admin(email, unset_fields=("renewal_checklist_progress",))
+
+    def test_certificate_email_audit_history_write_sort_security_and_validation(
+            self, authenticated_client, credentials, foreign_notary_account):
+        signer_name = f"TEST_History_{uuid.uuid4().hex[:8]}"
+        created = authenticated_client.post(
+            f"{BASE_URL}/api/entries",
+            json=self._entry_payload(signer_name),
+            timeout=20,
+        )
+        assert created.status_code == 200, created.text
+        entry_id = created.json()["id"]
+        history_url = f"{BASE_URL}/api/entries/{entry_id}/email-history"
+
+        foreign_created = foreign_notary_account["session"].post(
+            f"{BASE_URL}/api/entries",
+            json=self._entry_payload(f"TEST_Foreign_History_{uuid.uuid4().hex[:8]}"),
+            timeout=20,
+        )
+        assert foreign_created.status_code == 200, foreign_created.text
+        foreign_entry_id = foreign_created.json()["id"]
+        try:
+            empty = authenticated_client.get(history_url, timeout=20)
+            assert empty.status_code == 200 and empty.json() == []
+
+            unauthenticated = requests.get(history_url, timeout=20)
+            assert unauthenticated.status_code == 401
+            assert unauthenticated.json()["detail"] == "Not authenticated"
+
+            malformed = authenticated_client.get(
+                f"{BASE_URL}/api/entries/not-an-object-id/email-history", timeout=20
+            )
+            assert malformed.status_code == 400
+            assert malformed.json()["detail"] == "Invalid identifier"
+
+            foreign = authenticated_client.get(
+                f"{BASE_URL}/api/entries/{foreign_entry_id}/email-history", timeout=20
+            )
+            assert foreign.status_code == 404
+            assert foreign.json()["detail"] == "Entry not found"
+
+            send_url = f"{BASE_URL}/api/entries/{entry_id}/email-certificate"
+            sent = authenticated_client.post(
+                send_url,
+                json={"to": credentials["email"], "message": "TEST iteration 9 sent audit row"},
+                timeout=45,
+            )
+            assert sent.status_code == 200, sent.text
+            sent_payload = sent.json()
+            assert sent_payload["ok"] is True
+            assert isinstance(sent_payload["email_id"], str) and sent_payload["email_id"]
+
+            after_sent = authenticated_client.get(history_url, timeout=20)
+            assert after_sent.status_code == 200
+            sent_rows = after_sent.json()
+            assert len(sent_rows) == 1
+            sent_row = sent_rows[0]
+            assert sent_row["to"] == credentials["email"]
+            assert sent_row["status"] == "sent"
+            assert sent_row["email_id"] == sent_payload["email_id"]
+            assert sent_row["error"] is None
+            assert sent_row["subject"].startswith("Your notarization certificate")
+            assert datetime.fromisoformat(sent_row["sent_at"])
+
+            failed = authenticated_client.post(
+                send_url,
+                json={"to": "delivered@resend.dev", "message": "TEST expected provider rejection audit row"},
+                timeout=45,
+            )
+            assert failed.status_code == 400, failed.text
+            assert isinstance(failed.json().get("detail"), str) and failed.json()["detail"]
+
+            history = authenticated_client.get(history_url, timeout=20)
+            assert history.status_code == 200, history.text
+            rows = history.json()
+            assert len(rows) == 2
+            assert [row["sent_at"] for row in rows] == sorted(
+                (row["sent_at"] for row in rows), reverse=True
+            )
+            assert [row["status"] for row in rows] == ["failed", "sent"]
+            failed_row = rows[0]
+            assert failed_row["to"] == "delivered@resend.dev"
+            assert failed_row["email_id"] is None
+            assert isinstance(failed_row["error"], str) and failed_row["error"]
+            assert datetime.fromisoformat(failed_row["sent_at"])
+            assert all(set(row) == {
+                "id", "to", "subject", "status", "email_id", "error", "sent_at"
+            } for row in rows)
+        finally:
+            async def cleanup(database):
+                await database.certificate_email_log.delete_many({"entry_id": entry_id})
+                await database.clients.delete_many({"name": signer_name})
+
+            _db_call(cleanup)
+            deleted = authenticated_client.delete(
+                f"{BASE_URL}/api/entries/{entry_id}", timeout=20
+            )
+            assert deleted.status_code == 200
+
+
+    def test_email_history_accepts_equivalent_uppercase_object_id(
+            self, authenticated_client, credentials):
+        """A valid ObjectId is hex-case-insensitive and should address the same entry/history."""
+        signer_name = f"TEST_History_Case_{uuid.uuid4().hex[:8]}"
+        created = authenticated_client.post(
+            f"{BASE_URL}/api/entries", json=self._entry_payload(signer_name), timeout=20
+        )
+        assert created.status_code == 200, created.text
+        entry_id = created.json()["id"]
+        admin = _get_admin(credentials["email"])
+        test_email_id = f"TEST_CASE_{uuid.uuid4().hex}"
+
+        async def seed_log(database):
+            await database.certificate_email_log.insert_one({
+                "user_id": str(admin["_id"]),
+                "entry_id": entry_id,
+                "to": credentials["email"],
+                "subject": "TEST uppercase ObjectId history",
+                "email_id": test_email_id,
+                "error": None,
+                "status": "sent",
+                "sent_at": datetime.now(timezone.utc).isoformat(),
+            })
+
+        _db_call(seed_log)
+        try:
+            response = authenticated_client.get(
+                f"{BASE_URL}/api/entries/{entry_id.upper()}/email-history", timeout=20
+            )
+            assert response.status_code == 200, response.text
+            rows = response.json()
+            assert len(rows) == 1
+            assert rows[0]["email_id"] == test_email_id
+            assert rows[0]["status"] == "sent"
+        finally:
+            async def cleanup(database):
+                await database.certificate_email_log.delete_many({"entry_id": entry_id})
+                await database.clients.delete_many({"name": signer_name})
+
+            _db_call(cleanup)
+            deleted = authenticated_client.delete(
+                f"{BASE_URL}/api/entries/{entry_id}", timeout=20
+            )
+            assert deleted.status_code == 200
+
+
+    def test_intake_qr_png_poster_contract_security_and_validation(
+            self, authenticated_client, foreign_notary_account):
+        from PIL import Image
+        import qrcode
+
+        created = authenticated_client.post(
+            f"{BASE_URL}/api/intakes",
+            json={
+                "label": "TEST Iteration 9 QR",
+                "appointment_note": "TEST Bring your original photo ID.",
+                "expires_hours": 24,
+            },
+            timeout=20,
+        )
+        assert created.status_code == 200, created.text
+        intake = created.json()
+
+        foreign_created = foreign_notary_account["session"].post(
+            f"{BASE_URL}/api/intakes",
+            json={"label": "TEST Foreign QR", "expires_hours": 24},
+            timeout=20,
+        )
+        assert foreign_created.status_code == 200, foreign_created.text
+        foreign_intake_id = foreign_created.json()["id"]
+        try:
+            for suffix in ("qr.png", "qr-poster.pdf"):
+                unauthenticated = requests.get(
+                    f"{BASE_URL}/api/intakes/{intake['id']}/{suffix}", timeout=30
+                )
+                assert unauthenticated.status_code == 401
+
+                malformed = authenticated_client.get(
+                    f"{BASE_URL}/api/intakes/not-an-object-id/{suffix}", timeout=30
+                )
+                assert malformed.status_code == 400
+                assert malformed.json()["detail"] == "Invalid identifier"
+
+                foreign = authenticated_client.get(
+                    f"{BASE_URL}/api/intakes/{foreign_intake_id}/{suffix}", timeout=30
+                )
+                assert foreign.status_code == 404
+                assert foreign.json()["detail"] == "Intake not found"
+
+            png = authenticated_client.get(
+                f"{BASE_URL}/api/intakes/{intake['id']}/qr.png", timeout=30
+            )
+            assert png.status_code == 200
+            assert png.headers["content-type"].startswith("image/png")
+            assert png.content.startswith(b"\x89PNG\r\n\x1a\n")
+            image = Image.open(io.BytesIO(png.content))
+            image.verify()
+            image = Image.open(io.BytesIO(png.content)).convert("RGB")
+            assert image.width == image.height and image.width >= 400
+            colors_in_qr = set(image.getdata())
+            assert (255, 255, 255) in colors_in_qr
+            assert any(r < 20 and 35 < g < 70 and 90 < b < 150 for r, g, b in colors_in_qr)
+
+            backend_env = dotenv_values("/app/backend/.env")
+            expected_url = f"{backend_env['ALERT_APP_URL'].rstrip('/')}/intake/{intake['token']}"
+            expected_qr = qrcode.QRCode(
+                version=None,
+                error_correction=qrcode.constants.ERROR_CORRECT_H,
+                box_size=12,
+                border=2,
+            )
+            expected_qr.add_data(expected_url)
+            expected_qr.make(fit=True)
+            expected_img = expected_qr.make_image(
+                fill_color="#00317A", back_color="white"
+            ).convert("RGB")
+            assert list(image.getdata()) == list(expected_img.getdata()), \
+                "QR image does not encode the expected public intake URL"
+
+            poster = authenticated_client.get(
+                f"{BASE_URL}/api/intakes/{intake['id']}/qr-poster.pdf", timeout=40
+            )
+            assert poster.status_code == 200, poster.text
+            assert poster.headers["content-type"].startswith("application/pdf")
+            assert poster.headers.get("content-disposition", "").startswith("attachment;")
+            assert poster.content.startswith(b"%PDF")
+            assert 45_000 <= len(poster.content) <= 90_000, len(poster.content)
+            print(f"Intake QR poster size: {len(poster.content)} bytes")
+
+            pdf = fitz.open(stream=poster.content, filetype="pdf")
+            assert pdf.page_count == 1
+            page = pdf[0]
+            assert round(page.rect.width) == 612 and round(page.rect.height) == 792
+            text = page.get_text()
+            for expected_text in (
+                "Scan to complete your details",
+                "HOW IT WORKS",
+                "A Division of YFI Enterprises, LLC",
+                expected_url,
+                "TEST Bring your original photo ID.",
+            ):
+                assert expected_text in text, f"Missing poster content: {expected_text!r}"
+            assert len(page.get_images(full=True)) >= 2, "Shield watermark or QR image missing"
+            square_rects = [
+                rect for image_info in page.get_images(full=True)
+                for rect in page.get_image_rects(image_info[0])
+                if abs(rect.width - rect.height) < 1 and rect.width >= 250
+            ]
+            assert any(abs(rect.x0 + rect.width / 2 - 306) < 5 for rect in square_rects), \
+                "Large QR image is not centered on the Letter page"
+            drawing_colors = [
+                color
+                for drawing in page.get_drawings()
+                for color in (drawing.get("color"), drawing.get("fill"))
+                if color
+            ]
+            assert any(sum(abs(c[i] - (0.875, 0.051, 0.106)[i]) for i in range(3)) < 0.03
+                       for c in drawing_colors), "Red top rule missing"
+            assert any(sum(abs(c[i] - (0.0, 0.192, 0.478)[i]) for i in range(3)) < 0.03
+                       for c in drawing_colors), "Navy HOW IT WORKS bar missing"
+        finally:
+            deleted = authenticated_client.delete(
+                f"{BASE_URL}/api/intakes/{intake['id']}", timeout=20
+            )
+            assert deleted.status_code == 200
+

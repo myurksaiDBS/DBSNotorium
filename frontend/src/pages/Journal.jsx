@@ -14,7 +14,7 @@ import {
 } from "@/components/ui/dialog";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Badge } from "@/components/ui/badge";
-import { Plus, Search, FileDown, Trash2, Eye, Pencil, Mail, FileText, Copy } from "lucide-react";
+import { Plus, Search, FileDown, Trash2, Eye, Pencil, Mail, FileText, Copy, ClipboardList } from "lucide-react";
 import SignaturePad from "@/components/SignaturePad";
 import { toast } from "sonner";
 import { API } from "@/api";
@@ -65,6 +65,24 @@ export default function Journal() {
   const [emailTo, setEmailTo] = useState("");
   const [emailNote, setEmailNote] = useState("");
   const [sending, setSending] = useState(false);
+  const [emailHistory, setEmailHistory] = useState([]);
+  const [historyLoading, setHistoryLoading] = useState(false);
+
+  const loadEmailHistory = async (entryId) => {
+    setHistoryLoading(true);
+    try {
+      const { data } = await api.get(`/entries/${entryId}/email-history`);
+      setEmailHistory(data);
+    } catch { setEmailHistory([]); }
+    finally { setHistoryLoading(false); }
+  };
+
+  // Refresh history whenever the view dialog opens for an entry
+  useEffect(() => {
+    if (viewing?.id) loadEmailHistory(viewing.id);
+    else setEmailHistory([]);
+    // eslint-disable-next-line
+  }, [viewing?.id]);
 
   const openEmailDialog = (entry) => {
     setEmailingEntry(entry);
@@ -96,6 +114,7 @@ export default function Journal() {
       toast.success(`Certificate emailed to ${data.sent_to}`);
       setEmailingEntry(null); setEmailTo(""); setEmailNote("");
       loadEntries();
+      if (viewing?.id) loadEmailHistory(viewing.id);
     } catch (err) {
       toast.error(err.response?.data?.detail || "Failed to send email");
     } finally { setSending(false); }
@@ -499,6 +518,51 @@ export default function Journal() {
                   <div className="text-xs text-[#4B5563] self-center ml-auto">
                     Last sent to <span className="font-medium text-[#111827]">{viewing.certificate_emailed_to}</span>
                   </div>
+                )}
+              </div>
+
+              {/* Email delivery history */}
+              <div className="pt-2" data-testid="email-history-section">
+                <div className="flex items-center gap-2 text-[10px] uppercase tracking-widest text-[#4B5563] mb-3">
+                  <ClipboardList className="w-3.5 h-3.5" /> Email Delivery History
+                </div>
+                {historyLoading ? (
+                  <div className="text-xs text-[#4B5563] italic">Loading...</div>
+                ) : emailHistory.length === 0 ? (
+                  <div className="text-xs text-[#4B5563] italic p-3 bg-[#F4F7F9] rounded-sm border border-[#E2E8F0]">
+                    No emails sent yet for this entry.
+                  </div>
+                ) : (
+                  <ul className="divide-y divide-[#E2E8F0] border border-[#E2E8F0] rounded-sm" data-testid="email-history-list">
+                    {emailHistory.map((h) => (
+                      <li key={h.id} data-testid={`email-history-item-${h.id}`}
+                          className="p-3 flex items-start justify-between gap-3">
+                        <div className="min-w-0 flex-1">
+                          <div className="flex items-baseline gap-2">
+                            <span className="text-sm font-medium text-[#111827] truncate">{h.to}</span>
+                            {h.status === "sent" ? (
+                              <span className="text-[10px] uppercase tracking-widest text-[#146334] bg-[#E8F5EC] px-1.5 py-0.5 rounded-sm">Sent</span>
+                            ) : (
+                              <span className="text-[10px] uppercase tracking-widest text-[#991B1B] bg-[#FDECEC] px-1.5 py-0.5 rounded-sm">Failed</span>
+                            )}
+                          </div>
+                          <div className="text-[11px] text-[#4B5563] font-mono-plex mt-0.5">
+                            {new Date(h.sent_at).toLocaleString()}
+                          </div>
+                          {h.error && (
+                            <div className="text-[11px] text-[#991B1B] mt-1 leading-relaxed">
+                              {h.error}
+                            </div>
+                          )}
+                          {h.email_id && (
+                            <div className="text-[10px] text-[#4B5563] font-mono-plex mt-1 truncate">
+                              provider id: {h.email_id}
+                            </div>
+                          )}
+                        </div>
+                      </li>
+                    ))}
+                  </ul>
                 )}
               </div>
             </>
