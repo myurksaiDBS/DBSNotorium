@@ -8,7 +8,8 @@ import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
 import { Badge } from "@/components/ui/badge";
 import { Checkbox } from "@/components/ui/checkbox";
-import { BellRing, Send, Mail, ListChecks, Lock, Stamp, KeyRound, Upload, Trash2, ImagePlus } from "lucide-react";
+import { Textarea } from "@/components/ui/textarea";
+import { BellRing, Send, Mail, ListChecks, Lock, Stamp, KeyRound, Upload, Trash2, ImagePlus, Building2, MailX } from "lucide-react";
 import { toast } from "sonner";
 
 export default function Settings() {
@@ -20,7 +21,14 @@ export default function Settings() {
     state: user?.state || "",
     alerts_enabled: user?.alerts_enabled !== false,
     firm_name: user?.firm_name || "",
+    firm_address: user?.firm_address || "",
+    firm_phone: user?.firm_phone || "",
+    firm_website: user?.firm_website || "",
+    firm_license_number: user?.firm_license_number || "",
   });
+  const [firmSaving, setFirmSaving] = useState(false);
+  const [bounces, setBounces] = useState(null);
+  const [bouncePreview, setBouncePreview] = useState(false);
   const [saving, setSaving] = useState(false);
   const [alertsStatus, setAlertsStatus] = useState(null);
   const [testing, setTesting] = useState(false);
@@ -135,7 +143,39 @@ export default function Settings() {
     } finally { setPwdSaving(false); }
   };
 
-  useEffect(() => { loadStatus(); loadChecklist(); loadSeal(); loadFirmLogo(); }, []);
+  useEffect(() => { loadStatus(); loadChecklist(); loadSeal(); loadFirmLogo(); loadBounces(); }, []);
+
+  const loadBounces = async () => {
+    try {
+      const { data } = await api.get("/alerts/bounces");
+      setBounces(data);
+    } catch { /* no-op */ }
+  };
+
+  const saveFirmProfile = async (e) => {
+    e.preventDefault();
+    setFirmSaving(true);
+    const res = await updateProfile({
+      firm_name: form.firm_name,
+      firm_address: form.firm_address,
+      firm_phone: form.firm_phone,
+      firm_website: form.firm_website,
+      firm_license_number: form.firm_license_number,
+    });
+    setFirmSaving(false);
+    if (res.ok) toast.success("Firm profile saved");
+    else toast.error(res.error);
+  };
+
+  const sendBouncePreview = async () => {
+    setBouncePreview(true);
+    try {
+      const { data } = await api.post("/cron/delivery-bounces/preview");
+      toast.success(`Preview digest sent to ${data.sent_to} (${data.count} bounces)`);
+    } catch (e) {
+      toast.error(formatApiError(e.response?.data?.detail) || "Could not send preview");
+    } finally { setBouncePreview(false); }
+  };
 
   const toggleChecklistItem = async (id, done) => {
     // Optimistic update
@@ -459,6 +499,140 @@ export default function Settings() {
           </form>
         </Card>
       </div>
+
+      {/* Firm Profile — extended firm details for the certificate footer */}
+      <Card className="p-6 border-[#E2E8F0] rounded-sm shadow-none bg-white" data-testid="firm-profile-card">
+        <div className="flex items-start gap-3 mb-4 pb-4 border-b border-[#E2E8F0]">
+          <div className="w-10 h-10 rounded-sm bg-[#EEF2FB] flex items-center justify-center shrink-0">
+            <Building2 className="w-5 h-5 text-[#00317A]" />
+          </div>
+          <div>
+            <div className="text-[10px] uppercase tracking-[0.25em] text-[#DF0D1B] mb-1">Branding</div>
+            <div className="font-serif text-xl text-[#00317A]">Firm Profile</div>
+            <p className="text-xs text-[#4B5563] mt-1">
+              Optional. Address, phone, website, and license number print in the certificate footer.
+            </p>
+          </div>
+        </div>
+        <form onSubmit={saveFirmProfile} className="space-y-4">
+          <div>
+            <Label className="text-[10px] uppercase tracking-widest text-[#4B5563]">Firm Name</Label>
+            <Input
+              value={form.firm_name}
+              onChange={(e) => setForm({ ...form, firm_name: e.target.value })}
+              placeholder="Domini Business Services"
+              className="mt-1 rounded-sm"
+              data-testid="firm-name-input"
+            />
+          </div>
+          <div>
+            <Label className="text-[10px] uppercase tracking-widest text-[#4B5563]">Firm Address</Label>
+            <Textarea
+              rows={2}
+              value={form.firm_address}
+              onChange={(e) => setForm({ ...form, firm_address: e.target.value })}
+              placeholder="123 Main St, Sacramento CA 95814"
+              className="mt-1 rounded-sm"
+              data-testid="firm-address-input"
+            />
+          </div>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <div>
+              <Label className="text-[10px] uppercase tracking-widest text-[#4B5563]">Phone</Label>
+              <Input
+                value={form.firm_phone}
+                onChange={(e) => setForm({ ...form, firm_phone: e.target.value })}
+                placeholder="(916) 555-0100"
+                className="mt-1 rounded-sm font-mono-plex"
+                data-testid="firm-phone-input"
+              />
+            </div>
+            <div>
+              <Label className="text-[10px] uppercase tracking-widest text-[#4B5563]">Website</Label>
+              <Input
+                value={form.firm_website}
+                onChange={(e) => setForm({ ...form, firm_website: e.target.value })}
+                placeholder="dominibusservices.com"
+                className="mt-1 rounded-sm font-mono-plex"
+                data-testid="firm-website-input"
+              />
+            </div>
+          </div>
+          <div>
+            <Label className="text-[10px] uppercase tracking-widest text-[#4B5563]">License / Registration Number</Label>
+            <Input
+              value={form.firm_license_number}
+              onChange={(e) => setForm({ ...form, firm_license_number: e.target.value })}
+              placeholder="e.g., NP-CA-2026-0001"
+              className="mt-1 rounded-sm font-mono-plex"
+              data-testid="firm-license-input"
+            />
+          </div>
+          <Button
+            type="submit"
+            disabled={firmSaving}
+            className="rounded-sm bg-[#00317A] hover:bg-[#00265E] text-white"
+            data-testid="save-firm-profile-btn"
+          >
+            {firmSaving ? "Saving..." : "Save Firm Profile"}
+          </Button>
+        </form>
+      </Card>
+
+      {/* Delivery Bounce Digest */}
+      <Card className="p-6 border-[#E2E8F0] rounded-sm shadow-none bg-white" data-testid="bounce-digest-card">
+        <div className="flex items-start justify-between gap-4 mb-4 pb-4 border-b border-[#E2E8F0] flex-wrap">
+          <div className="flex items-start gap-3">
+            <div className="w-10 h-10 rounded-sm bg-[#FDECEC] flex items-center justify-center shrink-0">
+              <MailX className="w-5 h-5 text-[#991B1B]" />
+            </div>
+            <div>
+              <div className="text-[10px] uppercase tracking-[0.25em] text-[#DF0D1B] mb-1">Delivery</div>
+              <div className="font-serif text-xl text-[#00317A]">Bounce Digest</div>
+              <p className="text-xs text-[#4B5563] mt-1 max-w-xl">
+                A morning email lists any certificate emails that failed overnight, each with a one-click <b>Open &amp; resend</b> link.
+              </p>
+            </div>
+          </div>
+          <Button
+            type="button"
+            onClick={sendBouncePreview}
+            disabled={bouncePreview || (bounces?.total ?? 0) === 0}
+            variant="outline"
+            className="rounded-sm border-[#00317A] text-[#00317A] hover:bg-[#00317A] hover:text-white"
+            data-testid="bounce-preview-btn"
+          >
+            {bouncePreview ? "Sending..." : "Send me a preview"}
+          </Button>
+        </div>
+        {bounces == null ? (
+          <div className="text-xs text-[#4B5563]">Loading recent delivery...</div>
+        ) : bounces.total === 0 ? (
+          <div className="p-4 bg-[#F1FAF3] rounded-sm border border-[#B7E0C1] text-sm text-[#146334]" data-testid="bounce-empty">
+            No bounced certificate emails in the last 7 days. Delivery looks healthy.
+          </div>
+        ) : (
+          <div className="space-y-2" data-testid="bounce-list">
+            <div className="text-xs text-[#4B5563] font-mono-plex">
+              {bounces.total} bounce{bounces.total === 1 ? "" : "s"} · last 7 days
+            </div>
+            {bounces.bounces.slice(0, 5).map((b) => (
+              <div key={b.id} className="p-3 border border-[#F4B4B4] bg-[#FDECEC] rounded-sm text-xs" data-testid={`bounce-row-${b.id}`}>
+                <div className="flex justify-between gap-3 flex-wrap">
+                  <span className="font-mono-plex text-[#111827]">{b.recipient || "—"}</span>
+                  <span className="text-[#4B5563]">{b.sent_at?.slice(0, 10) || ""}</span>
+                </div>
+                <div className="text-[#991B1B] mt-1">{b.error_msg || "delivery failed"}</div>
+              </div>
+            ))}
+            {bounces.total > 5 && (
+              <div className="text-xs text-[#4B5563] text-center pt-1">
+                and {bounces.total - 5} more — resend individually from each journal entry.
+              </div>
+            )}
+          </div>
+        )}
+      </Card>
 
       {/* Renewal Checklist */}
       {checklist && (

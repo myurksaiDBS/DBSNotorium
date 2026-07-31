@@ -18,8 +18,14 @@ def credentials():
     if not path.exists():
         pytest.skip("Missing /app/memory/test_credentials.md")
     content = path.read_text(encoding="utf-8")
-    email = re.search(r"(?im)^- \*\*Email:\*\*\s*([^\s]+)", content)
-    password = re.search(r"(?im)^- \*\*Password:\*\*\s*([^\s]+)", content)
+    email = re.search(
+        r"(?im)^\s*(?:[-*]\s*)?(?:\*\*)?email(?:\*\*)?\s*:\s*`?([^`\s]+)",
+        content,
+    )
+    password = re.search(
+        r"(?im)^\s*(?:[-*]\s*)?(?:\*\*)?password(?:\*\*)?\s*:\s*`?([^`\s]+)",
+        content,
+    )
     if not email or not password:
         pytest.skip("Admin credentials are not present in test_credentials.md")
     return {"email": email.group(1), "password": password.group(1)}

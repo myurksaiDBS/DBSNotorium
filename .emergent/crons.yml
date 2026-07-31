@@ -6,3 +6,9 @@ crons:
     method: POST
     # Cron endpoints must ack 2xx immediately; enqueue/background the actual work.
     enabled: true
+  - name: delivery-bounces
+    description: "Daily 8:30am UTC digest of certificate emails that bounced in the last 24h. Sends one email per notary listing failed sends with one-click resend links."
+    cron: "30 8 * * *"
+    endpoint: "{{BASE_URL}}/api/cron/delivery-bounces"
+    method: POST
+    enabled: true

@@ -118,6 +118,10 @@ class ProfileIn(BaseModel):
     state: Optional[str] = None
     alerts_enabled: Optional[bool] = None
     firm_name: Optional[str] = None
+    firm_address: Optional[str] = None
+    firm_phone: Optional[str] = None
+    firm_website: Optional[str] = None
+    firm_license_number: Optional[str] = None
 
 # Journal entry
 class EntryIn(BaseModel):
@@ -303,6 +307,10 @@ async def me(user=Depends(get_current_user)):
         "last_alert_sent_at": user.get("last_alert_sent_at"),
         "has_seal": bool(user.get("seal_data")),
         "firm_name": user.get("firm_name"),
+        "firm_address": user.get("firm_address"),
+        "firm_phone": user.get("firm_phone"),
+        "firm_website": user.get("firm_website"),
+        "firm_license_number": user.get("firm_license_number"),
     }
 
 @api.post("/auth/refresh")
@@ -344,6 +352,10 @@ async def update_profile(payload: ProfileIn, user=Depends(get_current_user)):
         "state": doc.get("state"),
         "alerts_enabled": doc.get("alerts_enabled", True),
         "firm_name": doc.get("firm_name"),
+        "firm_address": doc.get("firm_address"),
+        "firm_phone": doc.get("firm_phone"),
+        "firm_website": doc.get("firm_website"),
+        "firm_license_number": doc.get("firm_license_number"),
         "has_seal": bool(doc.get("seal_data")),
     }
 
@@ -874,6 +886,160 @@ async def cron_commission_alerts(
     background.add_task(_scan_and_send_alerts)
     return {"accepted": True, "run_id": x_webhook_id}
 
+
+# ---- Delivery bounce digest ----
+def _render_bounce_digest_email(notary_name: str, rows: list[dict], app_url: str) -> tuple[str, str]:
+    subject = f"[Notarium] {len(rows)} certificate email{'s' if len(rows) != 1 else ''} bounced overnight"
+    row_html = ""
+    for r in rows:
+        entry_link = f"{app_url}/journal?entry={r.get('entry_id','')}"
+        row_html += (
+            f'<tr>'
+            f'<td style="padding:8px 12px;border-bottom:1px solid #E2E8F0;font-family:Georgia,serif;font-size:13px;">'
+            f'{_html.escape(r.get("signer_name") or "—")}'
+            f'<div style="font-family:SFMono-Regular,Menlo,Courier,monospace;font-size:11px;color:#4B5563;">'
+            f'{_html.escape(r.get("recipient") or "")}</div></td>'
+            f'<td style="padding:8px 12px;border-bottom:1px solid #E2E8F0;font-size:12px;color:#991B1B;">'
+            f'{_html.escape((r.get("error_msg") or "delivery failed")[:80])}</td>'
+            f'<td style="padding:8px 12px;border-bottom:1px solid #E2E8F0;text-align:right;">'
+            f'<a href="{entry_link}" style="color:#DF0D1B;text-decoration:none;font-size:12px;letter-spacing:0.05em;text-transform:uppercase;">Open &amp; resend →</a></td>'
+            f'</tr>'
+        )
+    html = f"""<!doctype html><html><body style="margin:0;padding:32px;background:#F4F7F9;font-family:Georgia,'Times New Roman',serif;">
+<table role="presentation" width="620" cellpadding="0" cellspacing="0" align="center"
+       style="background:#ffffff;border:1px solid #E2E8F0;">
+  <tr><td style="background:#00317A;color:#ffffff;padding:20px 32px;">
+      <div style="font-size:11px;letter-spacing:0.25em;color:#F0B429;text-transform:uppercase;">Delivery Digest</div>
+      <div style="font-size:20px;margin-top:4px;">Certificate emails that bounced</div>
+  </td></tr>
+  <tr><td style="padding:20px 32px 8px 32px;color:#111827;font-size:14px;line-height:1.5;">
+      Good morning {_html.escape(notary_name or "there")},<br/><br/>
+      {len(rows)} certificate email{'s' if len(rows) != 1 else ''} failed to reach recipients overnight.
+      Open the entry and click <b>Resend</b> to try again.
+  </td></tr>
+  <tr><td style="padding:0 24px 20px 24px;">
+      <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="border:1px solid #E2E8F0;">
+        <thead><tr style="background:#F4F7F9;">
+          <th align="left" style="padding:8px 12px;font-size:10px;letter-spacing:0.2em;color:#4B5563;text-transform:uppercase;">Signer</th>
+          <th align="left" style="padding:8px 12px;font-size:10px;letter-spacing:0.2em;color:#4B5563;text-transform:uppercase;">Reason</th>
+          <th align="right" style="padding:8px 12px;font-size:10px;letter-spacing:0.2em;color:#4B5563;text-transform:uppercase;">Action</th>
+        </tr></thead>
+        <tbody>{row_html}</tbody>
+      </table>
+  </td></tr>
+  <tr><td style="padding:12px 32px 20px 32px;color:#4B5563;font-size:12px;border-top:1px solid #E2E8F0;">
+      — Notarium · Domini Business Services
+  </td></tr>
+</table></body></html>"""
+    return subject, html
+
+
+async def _scan_and_send_bounce_digests():
+    """Per notary, collect failed certificate sends in last 24h and email a digest."""
+    now = datetime.now(timezone.utc)
+    since = (now - timedelta(hours=24)).isoformat()
+    app_url = os.environ.get("ALERT_APP_URL", "").rstrip("/")
+    failed_docs = await db.certificate_email_log.find({
+        "status": "failed",
+        "sent_at": {"$gte": since},
+        "bounce_digest_sent": {"$ne": True},
+    }).to_list(2000)
+    if not failed_docs:
+        return {"sent": 0, "notaries": 0, "total_bounces": 0}
+    groups: dict[str, list[dict]] = {}
+    for d in failed_docs:
+        groups.setdefault(d["user_id"], []).append(d)
+    sent = 0
+    for uid, rows in groups.items():
+        try:
+            notary = await db.users.find_one({"_id": ObjectId(uid)})
+        except Exception:
+            continue
+        if not notary:
+            continue
+        subject, html = _render_bounce_digest_email(notary.get("name", ""), rows, app_url)
+        email_id, _err = await _send_email(notary["email"], subject, html)
+        if email_id:
+            sent += 1
+            ids = [r["_id"] for r in rows]
+            await db.certificate_email_log.update_many(
+                {"_id": {"$in": ids}},
+                {"$set": {"bounce_digest_sent": True,
+                          "bounce_digest_sent_at": now.isoformat()}},
+            )
+    return {"sent": sent, "notaries": len(groups), "total_bounces": len(failed_docs)}
+
+
+@api.post("/cron/delivery-bounces")
+async def cron_delivery_bounces(
+    background: BackgroundTasks,
+    authorization: Optional[str] = Header(default=None),
+    x_webhook_id: Optional[str] = Header(default=None, alias="X-Webhook-Id"),
+):
+    """Daily digest of certificate email bounces. Same auth pattern as commission-alerts."""
+    expected = os.environ.get("WEBHOOK_CRON_SECRET", "")
+    provided = ""
+    if authorization and authorization.startswith("Bearer "):
+        provided = authorization[7:]
+    if not expected or not hmac.compare_digest(expected, provided):
+        raise HTTPException(status_code=401, detail="Unauthorized")
+    if x_webhook_id:
+        try:
+            await db.cron_runs.insert_one({
+                "run_id": x_webhook_id,
+                "cron": "delivery-bounces",
+                "received_at": datetime.now(timezone.utc).isoformat(),
+            })
+        except DuplicateKeyError:
+            return {"accepted": True, "duplicate": True, "run_id": x_webhook_id}
+    background.add_task(_scan_and_send_bounce_digests)
+    return {"accepted": True, "run_id": x_webhook_id}
+
+
+@api.get("/alerts/bounces")
+async def bounce_summary(user=Depends(get_current_user)):
+    """Read-only summary of this notary's recent bounced certificates."""
+    since = (datetime.now(timezone.utc) - timedelta(days=7)).isoformat()
+    docs = await db.certificate_email_log.find({
+        "user_id": user["_id"],
+        "status": "failed",
+        "sent_at": {"$gte": since},
+    }).sort("sent_at", -1).to_list(100)
+    return {
+        "total": len(docs),
+        "bounces": [
+            {
+                "id": str(d["_id"]),
+                "entry_id": d.get("entry_id"),
+                "recipient": d.get("recipient"),
+                "error_msg": d.get("error_msg"),
+                "sent_at": d.get("sent_at"),
+                "digest_notified": bool(d.get("bounce_digest_sent")),
+            } for d in docs
+        ],
+    }
+
+
+@api.post("/cron/delivery-bounces/preview")
+async def preview_bounce_digest(user=Depends(get_current_user)):
+    """Send this notary a preview of their bounce digest right now."""
+    since = (datetime.now(timezone.utc) - timedelta(days=7)).isoformat()
+    rows = await db.certificate_email_log.find({
+        "user_id": user["_id"],
+        "status": "failed",
+        "sent_at": {"$gte": since},
+    }).sort("sent_at", -1).to_list(50)
+    if not rows:
+        raise HTTPException(status_code=400, detail="No recent bounces to preview.")
+    app_url = os.environ.get("ALERT_APP_URL", "").rstrip("/")
+    subject, html = _render_bounce_digest_email(user.get("name", ""), rows, app_url)
+    subject = "[Preview] " + subject
+    email_id, err = await _send_email(user["email"], subject, html)
+    if not email_id:
+        raise HTTPException(status_code=400, detail=err or "Could not send email.")
+    return {"ok": True, "email_id": email_id, "sent_to": user["email"], "count": len(rows)}
+
+
 @api.post("/alerts/test")
 async def send_test_alert(user=Depends(get_current_user)):
     """Send a preview commission alert to the notary immediately."""
@@ -1270,6 +1436,38 @@ def _render_certificate_pdf(entry: dict, notary: dict) -> bytes:
             elems.append(seal_row)
         except Exception:
             pass
+
+    # Firm details footer — appears only when the notary has filled in firm
+    # profile fields. Keeps the certificate compact for users who haven't.
+    firm_lines = []
+    if notary.get("firm_name"):
+        firm_lines.append(f"<b>{esc(notary['firm_name'])}</b>")
+    contact_bits = []
+    if notary.get("firm_address"):
+        contact_bits.append(esc(notary["firm_address"]))
+    if notary.get("firm_phone"):
+        contact_bits.append(esc(notary["firm_phone"]))
+    if notary.get("firm_website"):
+        contact_bits.append(esc(notary["firm_website"]))
+    if contact_bits:
+        firm_lines.append(" &nbsp;·&nbsp; ".join(contact_bits))
+    if notary.get("firm_license_number"):
+        firm_lines.append(f"<b>License:</b> {esc(notary['firm_license_number'])}")
+    if firm_lines:
+        firm_para = ParagraphStyle('firm', parent=value, fontSize=8.5, leading=12,
+                                    textColor=colors.HexColor("#4B5563"),
+                                    alignment=1)  # centered
+        firm_block = Table(
+            [[Paragraph("<br/>".join(firm_lines), firm_para)]],
+            colWidths=[6.8 * inch],
+        )
+        firm_block.setStyle(TableStyle([
+            ('LINEABOVE', (0, 0), (-1, 0), 0.5, colors.HexColor("#E2E8F0")),
+            ('TOPPADDING', (0, 0), (-1, -1), 10),
+            ('BOTTOMPADDING', (0, 0), (-1, -1), 4),
+        ]))
+        elems.append(Spacer(1, 0.15 * inch))
+        elems.append(firm_block)
 
     doc.build(elems, onFirstPage=stamp, onLaterPages=stamp)
     buf.seek(0)
