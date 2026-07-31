@@ -17,6 +17,7 @@ const nav = [
 export default function Layout() {
   const { user, logout } = useAuth();
   const navigate = useNavigate();
+  const firm = user?.firm_name?.trim();
 
   return (
     <div className="min-h-screen flex bg-[#F4F7F9]">
@@ -27,9 +28,18 @@ export default function Layout() {
             <div className="w-11 h-11 rounded-sm bg-white flex items-center justify-center p-1 shadow-sm">
               <img src="/domini-logo.png" alt="Domini" className="w-full h-full object-contain" />
             </div>
-            <div>
-              <div className="font-serif text-lg leading-tight">Notarium</div>
-              <div className="text-[10px] uppercase tracking-[0.2em] text-white/60">Domini · Journal</div>
+            <div className="min-w-0">
+              {firm ? (
+                <>
+                  <div className="font-serif text-lg leading-tight truncate" data-testid="firm-name">{firm}</div>
+                  <div className="text-[9px] uppercase tracking-[0.2em] text-white/60">Notarium Journal</div>
+                </>
+              ) : (
+                <>
+                  <div className="font-serif text-lg leading-tight">Notarium</div>
+                  <div className="text-[10px] uppercase tracking-[0.2em] text-white/60">Domini · Journal</div>
+                </>
+              )}
             </div>
           </div>
         </div>
@@ -68,8 +78,8 @@ export default function Layout() {
             <LogOut className="w-4 h-4 mr-2" /> Sign Out
           </Button>
         </div>
-        <div className="px-6 py-3 text-[9px] uppercase tracking-[0.25em] text-white/40 border-t border-white/10 text-center font-mono-plex">
-          A Division of YFI Enterprises
+        <div className="px-6 py-3 text-[9px] uppercase tracking-[0.25em] text-white/40 border-t border-white/10 text-center font-mono-plex" data-testid="powered-by">
+          Powered by Notarium · Domini Business Services
         </div>
       </aside>
 

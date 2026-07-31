@@ -105,6 +105,7 @@ class ProfileIn(BaseModel):
     commission_expires: Optional[str] = None
     state: Optional[str] = None
     alerts_enabled: Optional[bool] = None
+    firm_name: Optional[str] = None
 
 # Journal entry
 class EntryIn(BaseModel):
@@ -278,6 +279,7 @@ async def me(user=Depends(get_current_user)):
         "alerts_enabled": user.get("alerts_enabled", True),
         "last_alert_sent_at": user.get("last_alert_sent_at"),
         "has_seal": bool(user.get("seal_data")),
+        "firm_name": user.get("firm_name"),
     }
 
 @api.post("/auth/refresh")
@@ -318,7 +320,8 @@ async def update_profile(payload: ProfileIn, user=Depends(get_current_user)):
         "commission_expires": doc.get("commission_expires"),
         "state": doc.get("state"),
         "alerts_enabled": doc.get("alerts_enabled", True),
-        "last_alert_sent_at": doc.get("last_alert_sent_at"),
+        "firm_name": doc.get("firm_name"),
+        "has_seal": bool(doc.get("seal_data")),
     }
 
 # ---- Commission Alerts (Resend email) ----

@@ -19,6 +19,7 @@ export default function Settings() {
     commission_expires: user?.commission_expires || "",
     state: user?.state || "",
     alerts_enabled: user?.alerts_enabled !== false,
+    firm_name: user?.firm_name || "",
   });
   const [saving, setSaving] = useState(false);
   const [alertsStatus, setAlertsStatus] = useState(null);

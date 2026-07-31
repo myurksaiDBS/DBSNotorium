@@ -89,11 +89,11 @@ export default function Login() {
           <h1 className="font-serif text-4xl mb-2 text-[#00317A]">
             {mode === "login" ? "Sign in to your journal" : "Create your notary account"}
           </h1>
-          <p className="text-sm text-[#4B5563] mb-8">
-            {mode === "login"
-              ? "Enter your credentials to access your log."
-              : "Register once — your entries remain private to you."}
-          </p>
+            <p className="text-sm text-[#4B5563] mb-8">
+              {mode === "login"
+                ? "Enter your credentials to access your log."
+                : "Register once — your journal, dashboard and reports stay private to you."}
+            </p>
 
           <form onSubmit={submit} className="space-y-5">
             {mode === "register" && (
