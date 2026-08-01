@@ -77,7 +77,7 @@ export default function Journal() {
     try {
       const { data } = await api.get("/journal-presets");
       setPresets(data || []);
-    } catch { /* no-op */ }
+    } catch (e) { console.error("Load presets failed:", e); }
   };
   const applyPreset = (p) => {
     setQ(p.q || "");
@@ -124,7 +124,7 @@ export default function Journal() {
     try {
       const { data } = await api.get(`/entries/${entryId}/email-history`);
       setEmailHistory(data);
-    } catch { setEmailHistory([]); }
+    } catch (e) { console.error("Load email history failed:", e); setEmailHistory([]); }
     finally { setHistoryLoading(false); }
   };
 

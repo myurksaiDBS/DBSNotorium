@@ -112,7 +112,7 @@ export default function Intakes() {
 
   const openEntryFromIntake = async (item) => {
     // Mark as used, then hand off to Journal with prefill data via location state
-    try { await api.post(`/intakes/${item.id}/mark-used`); } catch {}
+    try { await api.post(`/intakes/${item.id}/mark-used`); } catch (e) { console.error("Mark intake used failed:", e); }
     nav("/journal", { state: { prefill: item.data, intakeId: item.id } });
   };
 

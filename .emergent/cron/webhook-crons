@@ -7,4 +7,5 @@ CRON_API_URL=https://ea.int.apis.emergentagent.com
 
 0 8 * * * root CRON_NAME=commission-alerts METHOD=POST ENDPOINT_URL_B64=aHR0cHM6Ly84NTkzZTBmMy00ZGEyLTQ5NGEtYWIyOC0zODBlODI4OGUxODIucHJldmlldy5lbWVyZ2VudGFnZW50LmNvbS9hcGkvY3Jvbi9jb21taXNzaW9uLWFsZXJ0cw== /bin/sh /app/.emergent/cron/dispatch_webhook.sh >> /var/log/webhook-cron.log 2>&1
 30 8 * * * root CRON_NAME=delivery-bounces METHOD=POST ENDPOINT_URL_B64=aHR0cHM6Ly84NTkzZTBmMy00ZGEyLTQ5NGEtYWIyOC0zODBlODI4OGUxODIucHJldmlldy5lbWVyZ2VudGFnZW50LmNvbS9hcGkvY3Jvbi9kZWxpdmVyeS1ib3VuY2Vz /bin/sh /app/.emergent/cron/dispatch_webhook.sh >> /var/log/webhook-cron.log 2>&1
+0 */4 * * * root CRON_NAME=intake-reminders METHOD=POST ENDPOINT_URL_B64=aHR0cHM6Ly84NTkzZTBmMy00ZGEyLTQ5NGEtYWIyOC0zODBlODI4OGUxODIucHJldmlldy5lbWVyZ2VudGFnZW50LmNvbS9hcGkvY3Jvbi9pbnRha2UtcmVtaW5kZXJz /bin/sh /app/.emergent/cron/dispatch_webhook.sh >> /var/log/webhook-cron.log 2>&1
 * * * * * root JOB_ID=dd60d176-eea4-4dde-b761-a5b97d56e49e CRON_API_URL=https://ea.int.apis.emergentagent.com /bin/sh /app/.emergent/cron/watch_crons.sh >> /var/log/webhook-cron.log 2>&1

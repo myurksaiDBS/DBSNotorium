@@ -46,19 +46,19 @@ export default function Settings() {
     try {
       const { data } = await api.get("/alerts/status");
       setAlertsStatus(data);
-    } catch { /* no-op */ }
+    } catch (e) { console.error("Load alerts status failed:", e); }
   };
   const loadChecklist = async () => {
     try {
       const { data } = await api.get("/renewal-checklist");
       setChecklist(data);
-    } catch { /* no-op */ }
+    } catch (e) { console.error("Load checklist failed:", e); }
   };
   const loadSeal = async () => {
     try {
       const { data } = await api.get("/auth/seal");
       setSeal(data);
-    } catch { /* no-op */ }
+    } catch (e) { console.error("Load seal failed:", e); }
   };
   const onSealPick = (e) => {
     const file = e.target.files?.[0];
@@ -94,7 +94,7 @@ export default function Settings() {
     try {
       const { data } = await api.get("/auth/firm-logo");
       setFirmLogo(data);
-    } catch { /* no-op */ }
+    } catch (e) { console.error("Load firm logo failed:", e); }
   };
   const onFirmLogoPick = (e) => {
     const file = e.target.files?.[0];
@@ -149,7 +149,7 @@ export default function Settings() {
     try {
       const { data } = await api.get("/alerts/bounces");
       setBounces(data);
-    } catch { /* no-op */ }
+    } catch (e) { console.error("Load bounces failed:", e); }
   };
 
   const saveFirmProfile = async (e) => {

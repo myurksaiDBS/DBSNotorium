@@ -21,7 +21,7 @@ export default function InviteNotaryDialog({ open, onOpenChange, defaultFirm = "
     try {
       const { data } = await api.get("/invites");
       setInvites(data.invites || []);
-    } catch { /* no-op */ } finally { setLoadingList(false); }
+    } catch (e) { console.error("Load invites failed:", e); } finally { setLoadingList(false); }
   };
 
   useEffect(() => {
@@ -60,7 +60,8 @@ export default function InviteNotaryDialog({ open, onOpenChange, defaultFirm = "
       setCopiedToken(token);
       toast.success("Invitation link copied");
       setTimeout(() => setCopiedToken(null), 2000);
-    } catch {
+    } catch (e) {
+      console.error("Copy invite link failed:", e);
       toast.error("Couldn't copy — link is: " + url);
     }
   };

@@ -36,7 +36,7 @@ export default function Clients() {
       }
       setOpen(false); setForm(empty); setEditingId(null);
       load();
-    } catch { toast.error("Failed to save"); }
+    } catch (e) { console.error("Save client failed:", e); toast.error("Failed to save"); }
   };
 
   const remove = async (id) => {

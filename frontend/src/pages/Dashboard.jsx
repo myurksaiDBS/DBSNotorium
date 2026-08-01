@@ -99,8 +99,8 @@ export default function Dashboard() {
               <ResponsiveContainer>
                 <PieChart>
                   <Pie data={stats.type_breakdown} dataKey="count" nameKey="type" outerRadius={80} innerRadius={45}>
-                    {stats.type_breakdown.map((_, i) => (
-                      <Cell key={i} fill={PIE_COLORS[i % PIE_COLORS.length]} />
+                    {stats.type_breakdown.map((entry, i) => (
+                      <Cell key={entry.type || `type-${i}`} fill={PIE_COLORS[i % PIE_COLORS.length]} />
                     ))}
                   </Pie>
                   <Tooltip contentStyle={{ borderRadius: 2, border: "1px solid #E2E8F0", fontFamily: "IBM Plex Sans", fontSize: 12 }} />
@@ -148,7 +148,7 @@ export default function Dashboard() {
             ) : (
               <ul className="space-y-1" data-testid="delivery-top-signers">
                 {stats.delivery.top_signers.map((s, i) => (
-                  <li key={i} className="flex items-center justify-between text-xs">
+                  <li key={s.name || `signer-${i}`} className="flex items-center justify-between text-xs">
                     <span className="text-[#111827] font-medium truncate">{s.name}</span>
                     <span className="font-mono-plex text-[#4B5563]">{s.count}</span>
                   </li>

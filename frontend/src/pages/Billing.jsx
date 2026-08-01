@@ -55,7 +55,7 @@ export default function Billing() {
           await load();
           return;
         }
-      } catch { /* ignore transient */ }
+      } catch (e) { console.debug("Billing poll transient error:", e); }
       if (Date.now() - start > 20000) { load(); return; }
       if (!cancelled) setTimeout(poll, 1500);
     };

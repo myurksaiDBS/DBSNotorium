@@ -26,7 +26,7 @@ export default function DocumentTypes() {
       setName(""); setDescription("");
       toast.success("Document type added");
       load();
-    } catch { toast.error("Failed to add"); }
+    } catch (e) { console.error("Add document type failed:", e); toast.error("Failed to add"); }
   };
 
   const remove = async (id) => {
