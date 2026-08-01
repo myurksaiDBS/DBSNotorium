@@ -14,7 +14,7 @@ import {
 } from "@/components/ui/dialog";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Badge } from "@/components/ui/badge";
-import { Plus, Search, FileDown, Trash2, Eye, Pencil, Mail, FileText, Copy, ClipboardList, RotateCcw, Bookmark, BookmarkPlus, X } from "lucide-react";
+import { Plus, Search, FileDown, Trash2, Eye, Pencil, Mail, FileText, Copy, ClipboardList, RotateCcw, Bookmark, BookmarkPlus, X, Download } from "lucide-react";
 import SignaturePad from "@/components/SignaturePad";
 import { toast } from "sonner";
 import { API } from "@/api";
@@ -279,15 +279,22 @@ export default function Journal() {
     const params = new URLSearchParams();
     if (startDate) params.append("start_date", startDate);
     if (endDate) params.append("end_date", endDate);
+  const exportPDF = async (preset = null) => {
+    const params = new URLSearchParams();
+    const sd = preset ? preset.start_date : startDate;
+    const ed = preset ? preset.end_date : endDate;
+    if (sd) params.append("start_date", sd);
+    if (ed) params.append("end_date", ed);
     const url = `${API}/entries/export/pdf${params.toString() ? `?${params.toString()}` : ""}`;
     const res = await fetch(url, { credentials: "include" });
     if (!res.ok) { toast.error("Failed to export PDF"); return; }
     const blob = await res.blob();
     const link = document.createElement("a");
     link.href = URL.createObjectURL(blob);
-    link.download = `notary-journal-${new Date().toISOString().slice(0,10)}.pdf`;
+    const label = preset ? preset.name.replace(/[^a-z0-9]+/gi, "-").toLowerCase() : new Date().toISOString().slice(0,10);
+    link.download = `notary-journal-${label}.pdf`;
     document.body.appendChild(link); link.click(); link.remove();
-    toast.success("PDF exported");
+    toast.success(preset ? `Exported "${preset.name}"` : "PDF exported");
   };
 
   const totalFees = useMemo(
@@ -343,9 +350,23 @@ export default function Journal() {
                 </button>
                 <button
                   type="button"
+                  onClick={() => exportPDF(p)}
+                  className={`px-1.5 py-1 border-l ${
+                    activePreset === p.id
+                      ? "border-white/20 hover:bg-[#00265E]"
+                      : "border-[#E2E8F0] hover:bg-[#EEF2FB] text-[#00317A]"
+                  }`}
+                  title={`Export "${p.name}" as PDF`}
+                  data-testid={`preset-export-${p.id}`}
+                  aria-label="Export preset as PDF"
+                >
+                  <Download className="w-3 h-3" />
+                </button>
+                <button
+                  type="button"
                   onClick={() => deletePreset(p.id, p.name)}
-                  className={`px-1.5 py-1 rounded-r-sm ${
-                    activePreset === p.id ? "hover:bg-[#00265E]" : "hover:bg-[#FDECEC] text-[#4B5563] hover:text-[#991B1B]"
+                  className={`px-1.5 py-1 rounded-r-sm border-l ${
+                    activePreset === p.id ? "border-white/20 hover:bg-[#00265E]" : "border-[#E2E8F0] hover:bg-[#FDECEC] text-[#4B5563] hover:text-[#991B1B]"
                   }`}
                   data-testid={`preset-delete-${p.id}`}
                   aria-label="Delete preset"
