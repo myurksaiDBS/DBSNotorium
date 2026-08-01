@@ -2243,6 +2243,37 @@ async def export_pdf(
         ('BACKGROUND', (0,-1), (-1,-1), colors.HexColor("#F4F7F9")),
     ]))
     elems.append(table)
+
+    # Firm details footer — mirrors the single-certificate footer so the
+    # multi-entry journal PDF also carries the notary's firm brand when set.
+    firm_lines = []
+    if user.get("firm_name"):
+        firm_lines.append(f"<b>{user['firm_name']}</b>")
+    contact_bits = []
+    if user.get("firm_address"):
+        contact_bits.append(user["firm_address"])
+    if user.get("firm_phone"):
+        contact_bits.append(user["firm_phone"])
+    if user.get("firm_website"):
+        contact_bits.append(user["firm_website"])
+    if contact_bits:
+        firm_lines.append(" &nbsp;·&nbsp; ".join(contact_bits))
+    if user.get("firm_license_number"):
+        firm_lines.append(f"<b>License:</b> {user['firm_license_number']}")
+    if firm_lines:
+        firm_para = ParagraphStyle('firmj', parent=styles['Normal'], fontSize=8.5,
+                                    leading=12, textColor=colors.HexColor("#4B5563"),
+                                    alignment=TA_CENTER)
+        firm_block = Table([[Paragraph("<br/>".join(firm_lines), firm_para)]],
+                            colWidths=[9.6 * inch])
+        firm_block.setStyle(TableStyle([
+            ('LINEABOVE', (0, 0), (-1, 0), 0.5, colors.HexColor("#E2E8F0")),
+            ('TOPPADDING', (0, 0), (-1, -1), 10),
+            ('BOTTOMPADDING', (0, 0), (-1, -1), 4),
+        ]))
+        elems.append(Spacer(1, 0.15 * inch))
+        elems.append(firm_block)
+
     doc.build(elems, onFirstPage=stamp, onLaterPages=stamp)
     buf.seek(0)
     return StreamingResponse(buf, media_type="application/pdf",
