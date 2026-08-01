@@ -10,6 +10,18 @@ const GOLD = "#D4AF37";
 const RED = "#DF0D1B";
 const PIE_COLORS = ["#00317A", "#DF0D1B", "#D4AF37", "#3F6B5C", "#5C4B7A", "#8B5A3C"];
 
+// Extracted to module scope so recharts doesn't see a new object identity
+// on every Dashboard render.
+const BAR_MARGIN = { top: 8, right: 8, bottom: 0, left: 0 };
+const AXIS_TICK = { fontSize: 11, fill: "#4B5563", fontFamily: "IBM Plex Sans" };
+const AXIS_LINE = { stroke: "#E2E8F0" };
+const TOOLTIP_STYLE = { borderRadius: 2, border: "1px solid #E2E8F0", fontFamily: "IBM Plex Sans", fontSize: 12 };
+const LEGEND_STYLE = { fontSize: 11, fontFamily: "IBM Plex Sans" };
+const BAR_RADIUS = [2, 2, 0, 0];
+const CHART_BOX = { width: "100%", height: 280 };
+const PIE_BOX = { width: "100%", height: 240 };
+const BAR_FORMATTER = (v, name) => name === "revenue" ? [`$${v}`, "Revenue"] : [v, "Entries"];
+
 const StatCard = ({ label, value, icon: Icon, sub, testid }) => (
   <Card className="p-6 bg-white border-[#E2E8F0] rounded-sm shadow-none" data-testid={testid}>
     <div className="flex items-start justify-between">
@@ -74,16 +86,15 @@ export default function Dashboard() {
               <p className="text-xs text-[#4B5563] mt-0.5">Last 6 months — entries &amp; revenue</p>
             </div>
           </div>
-          <div style={{ width: "100%", height: 280 }}>
+          <div style={CHART_BOX}>
             <ResponsiveContainer>
-              <BarChart data={stats.monthly_series} margin={{ top: 8, right: 8, bottom: 0, left: 0 }}>
+              <BarChart data={stats.monthly_series} margin={BAR_MARGIN}>
                 <CartesianGrid strokeDasharray="3 3" stroke="#E2E8F0" vertical={false} />
-                <XAxis dataKey="month" tick={{ fontSize: 11, fill: "#4B5563", fontFamily: "IBM Plex Sans" }} axisLine={{ stroke: "#E2E8F0" }} tickLine={false} />
-                <YAxis tick={{ fontSize: 11, fill: "#4B5563", fontFamily: "IBM Plex Sans" }} axisLine={{ stroke: "#E2E8F0" }} tickLine={false} />
-                <Tooltip contentStyle={{ borderRadius: 2, border: "1px solid #E2E8F0", fontFamily: "IBM Plex Sans", fontSize: 12 }}
-                  formatter={(v, name) => name === "revenue" ? [`$${v}`, "Revenue"] : [v, "Entries"]} />
-                <Bar dataKey="count" fill={NAVY} radius={[2,2,0,0]} name="count" />
-                <Bar dataKey="revenue" fill={RED} radius={[2,2,0,0]} name="revenue" />
+                <XAxis dataKey="month" tick={AXIS_TICK} axisLine={AXIS_LINE} tickLine={false} />
+                <YAxis tick={AXIS_TICK} axisLine={AXIS_LINE} tickLine={false} />
+                <Tooltip contentStyle={TOOLTIP_STYLE} formatter={BAR_FORMATTER} />
+                <Bar dataKey="count" fill={NAVY} radius={BAR_RADIUS} name="count" />
+                <Bar dataKey="revenue" fill={RED} radius={BAR_RADIUS} name="revenue" />
               </BarChart>
             </ResponsiveContainer>
           </div>
@@ -95,7 +106,7 @@ export default function Dashboard() {
           {stats.type_breakdown.length === 0 ? (
             <div className="text-sm text-[#4B5563] py-10 text-center">No entries yet.</div>
           ) : (
-            <div style={{ width: "100%", height: 240 }}>
+            <div style={PIE_BOX}>
               <ResponsiveContainer>
                 <PieChart>
                   <Pie data={stats.type_breakdown} dataKey="count" nameKey="type" outerRadius={80} innerRadius={45}>
@@ -103,8 +114,8 @@ export default function Dashboard() {
                       <Cell key={entry.type || `type-${i}`} fill={PIE_COLORS[i % PIE_COLORS.length]} />
                     ))}
                   </Pie>
-                  <Tooltip contentStyle={{ borderRadius: 2, border: "1px solid #E2E8F0", fontFamily: "IBM Plex Sans", fontSize: 12 }} />
-                  <Legend wrapperStyle={{ fontSize: 11, fontFamily: "IBM Plex Sans" }} />
+                  <Tooltip contentStyle={TOOLTIP_STYLE} />
+                  <Legend wrapperStyle={LEGEND_STYLE} />
                 </PieChart>
               </ResponsiveContainer>
             </div>
