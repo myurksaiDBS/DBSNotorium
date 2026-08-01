@@ -404,6 +404,23 @@ async def update_profile(payload: ProfileIn, user=Depends(get_current_user)):
         "has_seal": bool(doc.get("seal_data")),
     }
 
+# ---- User Manual (in-app help drawer) ----
+@api.get("/docs/user-manual")
+async def get_user_manual(user=Depends(get_current_user)):
+    """Serve the Markdown user manual for the in-app help drawer.
+    Auth-gated because it references features only subscribers see."""
+    manual_path = Path(__file__).parent.parent / "docs" / "USER_MANUAL.md"
+    if not manual_path.exists():
+        raise HTTPException(status_code=404, detail="User manual not found")
+    try:
+        text = manual_path.read_text(encoding="utf-8")
+    except Exception as e:
+        logging.error(f"Failed to read user manual: {e}")
+        raise HTTPException(status_code=500, detail="Could not read user manual")
+    return {"content": text, "updated_at": datetime.fromtimestamp(
+        manual_path.stat().st_mtime, tz=timezone.utc).isoformat()}
+
+
 # ---- Admin Roster (super-admin only) ----
 def _require_admin(user: dict):
     if user.get("role") != "admin":

@@ -1,10 +1,12 @@
 import { NavLink, Outlet, useNavigate } from "react-router-dom";
+import { useState } from "react";
 import { useAuth } from "@/context/AuthContext";
 import {
-  LayoutDashboard, BookOpen, Users, FileType2, Settings, LogOut, Link2, Crown, CreditCard,
+  LayoutDashboard, BookOpen, Users, FileType2, Settings, LogOut, Link2, Crown, CreditCard, HelpCircle,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import BillingBanner from "@/components/BillingBanner";
+import HelpDrawer from "@/components/HelpDrawer";
 
 const baseNav = [
   { to: "/", label: "Dashboard", icon: LayoutDashboard, end: true, testid: "nav-dashboard" },
@@ -21,6 +23,7 @@ const adminNav = { to: "/admin/roster", label: "Roster", icon: Crown, testid: "n
 export default function Layout() {
   const { user, logout } = useAuth();
   const navigate = useNavigate();
+  const [helpOpen, setHelpOpen] = useState(false);
   const firm = user?.firm_name?.trim();
   const nav = user?.role === "admin" ? [...baseNav, adminNav] : baseNav;
 
@@ -76,6 +79,15 @@ export default function Layout() {
           <Button
             variant="ghost"
             size="sm"
+            data-testid="help-btn"
+            onClick={() => setHelpOpen(true)}
+            className="w-full justify-start text-white/80 hover:text-white hover:bg-white/10 mb-1"
+          >
+            <HelpCircle className="w-4 h-4 mr-2" /> Help &amp; User Manual
+          </Button>
+          <Button
+            variant="ghost"
+            size="sm"
             data-testid="logout-btn"
             className="w-full justify-start text-white/80 hover:text-white hover:bg-white/10"
             onClick={async () => { await logout(); navigate("/login"); }}
@@ -94,6 +106,8 @@ export default function Layout() {
           <Outlet />
         </div>
       </main>
+
+      <HelpDrawer open={helpOpen} onOpenChange={setHelpOpen} />
     </div>
   );
 }
