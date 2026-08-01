@@ -9,7 +9,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { Badge } from "@/components/ui/badge";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter, DialogDescription } from "@/components/ui/dialog";
-import { Plus, Copy, Trash2, MessageSquare, ArrowRight, Link2, QrCode } from "lucide-react";
+import { Plus, Copy, Trash2, MessageSquare, ArrowRight, Link2, QrCode, BellRing } from "lucide-react";
 import { toast } from "sonner";
 import { API } from "@/api";
 
@@ -23,7 +23,7 @@ const STATUS_STYLE = {
 export default function Intakes() {
   const [items, setItems] = useState([]);
   const [open, setOpen] = useState(false);
-  const [form, setForm] = useState({ label: "", appointment_note: "", expires_hours: 168 });
+  const [form, setForm] = useState({ label: "", appointment_note: "", expires_hours: 168, signer_email: "", appointment_at: "" });
   const [detail, setDetail] = useState(null);
   const [posterHeadline, setPosterHeadline] = useState("");
   const [posterNote, setPosterNote] = useState("");
@@ -41,7 +41,7 @@ export default function Intakes() {
       const { data } = await api.post("/intakes", form);
       toast.success("Pre-fill link created");
       setOpen(false);
-      setForm({ label: "", appointment_note: "", expires_hours: 168 });
+      setForm({ label: "", appointment_note: "", expires_hours: 168, signer_email: "", appointment_at: "" });
       load();
       // Auto-open detail so user can copy
       setDetail(data);
@@ -53,6 +53,16 @@ export default function Intakes() {
     await api.delete(`/intakes/${id}`);
     load();
     toast.success("Intake deleted");
+  };
+
+  const sendReminder = async (id) => {
+    try {
+      await api.post(`/intakes/${id}/send-reminder`);
+      toast.success("Reminder sent to signer");
+      load();
+    } catch (err) {
+      toast.error(err?.response?.data?.detail || "Could not send reminder");
+    }
   };
 
   const publicUrl = (token) =>
@@ -146,6 +156,11 @@ export default function Intakes() {
                   <TableCell className="font-mono-plex text-xs text-[#4B5563]">{(it.expires_at || "").slice(0,10)}</TableCell>
                   <TableCell className="text-right">
                     <div className="flex justify-end gap-1">
+                      {it.status === "pending" && it.signer_email && it.appointment_at && !it.reminder_sent_at && (
+                        <Button size="sm" variant="ghost" onClick={() => sendReminder(it.id)} data-testid={`send-reminder-${it.id}`} title="Email a reminder to the signer now">
+                          <BellRing className="w-4 h-4 mr-1" /> Remind
+                        </Button>
+                      )}
                       <Button size="sm" variant="ghost" onClick={() => setDetail(it)} data-testid={`share-intake-${it.id}`}>
                         <Link2 className="w-4 h-4 mr-1" /> Share
                       </Button>
@@ -185,6 +200,19 @@ export default function Intakes() {
             <div>
               <Label>Appointment note (shown to signer)</Label>
               <Textarea value={form.appointment_note} onChange={(e) => setForm({...form, appointment_note: e.target.value})} className="mt-1 rounded-sm" rows={2} placeholder="Optional — meeting time, place, or documents to bring." data-testid="intake-note" />
+            </div>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              <div>
+                <Label>Signer email <span className="text-[#4B5563] font-normal">(for reminders)</span></Label>
+                <Input type="email" value={form.signer_email} onChange={(e) => setForm({...form, signer_email: e.target.value})} className="mt-1 rounded-sm" placeholder="signer@example.com" data-testid="intake-signer-email" />
+              </div>
+              <div>
+                <Label>Appointment date &amp; time</Label>
+                <Input type="datetime-local" value={form.appointment_at} onChange={(e) => setForm({...form, appointment_at: e.target.value})} className="mt-1 rounded-sm" data-testid="intake-appointment-at" />
+              </div>
+            </div>
+            <div className="text-xs text-[#4B5563] -mt-2 leading-relaxed">
+              When both are set, we&apos;ll automatically email the signer ~24 hours before their appointment if the intake is still pending.
             </div>
             <div>
               <Label>Link expires in</Label>

@@ -1,0 +1,58 @@
+{
+  "summary": "Backend-only iteration 21 testing completed against the public preview URL. All core Client Portal Follow-up flows passed: optional field echo/list persistence, backwards-compatible intake creation, cookie-protected manual reminder errors and successful delivery metadata, cron Bearer auth/idempotency, 20h-32h selection, and all requested endpoint regressions. Three validation/security assertions failed: malformed appointment_at and signer_email values are accepted, and CORS still returns wildcard origin without credential support.",
+  "backend_issues": {
+    "critical": [
+      {
+        "endpoint": "POST /api/intakes",
+        "issue": "Input validation is absent for both new fields. The API returned HTTP 200 and persisted appointment_at='tomorrow around lunch' and signer_email='not-an-email-address'. These records silently cannot receive scheduled reminders.",
+        "priority": "HIGH"
+      },
+      {
+        "endpoint": "CORS preflight /api/auth/me",
+        "issue": "Credentialed CORS contract fails: preflight returns Access-Control-Allow-Origin: * and omits Access-Control-Allow-Credentials: true instead of allowing the explicit app origin.",
+        "priority": "HIGH"
+      }
+    ],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_iteration21.py",
+    "/app/test_reports/pytest/notarium_iteration21.xml",
+    "/app/test_reports/pytest/notarium_iteration21_invalid_email.xml",
+    "/app/test_reports/pytest/notarium_iteration21_regression_retry.xml"
+  ],
+  "action_items": [
+    "Change IntakeCreateIn.signer_email to EmailStr (while preserving empty/omitted compatibility) and validate appointment_at as an ISO datetime; reject malformed values with 422.",
+    "Normalize appointment_at to timezone-aware UTC before storage and comparison. The current frontend datetime-local value is timezone-naive while the cron window is UTC, so non-UTC appointments can be reminded at the wrong time.",
+    "Configure CORSMiddleware from explicit CORS_ORIGINS and set allow_credentials=True; wildcard origin cannot support cookie auth.",
+    "Retest intake validation, reminder selection with timezone offsets, and credentialed CORS after fixes."
+  ],
+  "critical_code_review_comments": [
+    "server.py:162-163 models signer_email and appointment_at as plain strings; create_intake only strips them, so Pydantic provides no email or datetime validation.",
+    "routes/alerts.py:235-242 performs lexicographic string range queries against UTC ISO boundaries. Mixed offsets and the frontend's timezone-naive datetime-local strings are not chronologically safe; store a BSON datetime or one canonical UTC representation.",
+    "server.py:1990-1995 hardcodes allow_origins=['*'] and allow_credentials=False, ignoring CORS_ORIGINS despite cookie-based authentication.",
+    "server.py remains approximately 2,000 lines, above the 700-line maintainability threshold; intake routes should be extracted into a focused router as alerts and invites were.",
+    "The requested /app/auth_testing.md playbook file is absent; credentials were available and the specified checks were implemented directly. Bcrypt $2b$, configured admin password, secure HttpOnly cookies, lockout after five failures, and the existing-admin seed update branch all passed runtime check or source review."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_iteration21.py",
+    "/app/test_reports/pytest/notarium_iteration21.xml",
+    "/app/test_reports/pytest/notarium_iteration21_invalid_email.xml",
+    "/app/test_reports/pytest/notarium_iteration21_regression_retry.xml",
+    "/app/test_reports/iteration_21.json"
+  ],
+  "success_rate": {
+    "backend": "83% (15/18 distinct assertions passed; all core requested reminder and regression flows passed, with 2 new-field validation failures and 1 CORS security failure)",
+    "frontend": "Not tested (backend-only request)"
+  },
+  "seed_data_creation": "Created temporary API and Mongo-seeded TEST_ intakes for in-window, out-of-window, missing-email, manual reminder, legacy, and invalid-input cases; created temporary cron-run and lockout rows. Cleanup fixtures removed all temporary intakes, cron runs, and login-attempt rows. Successful manual and cron checks sent reminder emails to the configured admin test address.",
+  "should_call_test_agent_after_fix": true,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Core reminder behavior is green. Manual success persisted reminder_sent_at and reminder_email_id. Cron auth returned 401 without/wrong Bearer, fresh delivery returned {accepted:true,run_id}, duplicate X-Webhook-Id returned duplicate:true, and only the pending in-window intake with email was updated. Requested /auth/me, /entries, /journal-presets, /alerts/status, commission-alerts cron, and delivery-bounces cron regressions passed. Re-run test_iteration21.py after adding validation/timezone normalization and CORS credential support.",
+  "rca_of_the_issue": "IntakeCreateIn declares the new fields as Optional[str], and create_intake strips/stores them without semantic validation. The cron later relies on lexicographic string ranges and an '@' check, so malformed or non-canonical values are silently skipped and timezone-naive values are interpreted against UTC. Separately, CORSMiddleware is hardcoded to wildcard/no-credentials rather than using the configured explicit origin, which conflicts with cookie authentication."
+}

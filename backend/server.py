@@ -159,6 +159,8 @@ class IntakeCreateIn(BaseModel):
     label: Optional[str] = ""          # e.g., "Smith closing – Thu 3pm"
     appointment_note: Optional[str] = ""
     expires_hours: int = 168           # 7 days default
+    signer_email: Optional[str] = ""   # For 24h follow-up reminders
+    appointment_at: Optional[str] = ""  # ISO datetime — powers 24h reminder cron
 
 class IntakeSubmitIn(BaseModel):
     signer_name: str = Field(min_length=1)
@@ -1689,6 +1691,9 @@ async def create_intake(payload: IntakeCreateIn, user=Depends(require_active_sub
         "token": token,
         "label": payload.label or "",
         "appointment_note": payload.appointment_note or "",
+        "signer_email": (payload.signer_email or "").strip().lower(),
+        "appointment_at": (payload.appointment_at or "").strip(),
+        "reminder_sent_at": None,
         "status": "pending",   # pending | completed | used | expired
         "data": None,
         "created_at": now.isoformat(),

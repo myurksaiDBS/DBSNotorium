@@ -12,3 +12,9 @@ crons:
     endpoint: "{{BASE_URL}}/api/cron/delivery-bounces"
     method: POST
     enabled: true
+  - name: intake-reminders
+    description: "Every 4h scan for pending signer-intake links whose appointment is 20-32h away. Emails the signer a reminder to complete the intake before their notarization."
+    cron: "0 */4 * * *"
+    endpoint: "{{BASE_URL}}/api/cron/intake-reminders"
+    method: POST
+    enabled: true

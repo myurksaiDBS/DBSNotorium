@@ -92,6 +92,64 @@ def _render_commission_email(notary_name: str, days_left: int, expires_on: date,
     return subject, html
 
 
+def _render_intake_reminder_email(
+    signer_name: str, notary_name: str, firm_name: str,
+    appointment_at: str, appointment_note: str, public_url: str,
+) -> tuple[str, str]:
+    """Reminder to a signer whose intake is still pending ~24h before appointment."""
+    try:
+        apt_dt = datetime.fromisoformat(appointment_at.replace("Z", "+00:00"))
+        apt_display = apt_dt.strftime("%A, %B %d at %I:%M %p")
+    except (ValueError, TypeError):
+        apt_display = appointment_at or "your upcoming appointment"
+    firm = firm_name or "Domini Business Services"
+    subject = f"Reminder: Please complete your signer intake before {apt_display}"
+    greeting = signer_name.strip() or "there"
+    note_block = ""
+    if appointment_note:
+        note_block = (
+            f'<div style="margin:16px 0;padding:12px 16px;background:#F8FAFC;border-left:3px solid #DF0D1B;'
+            f'font-size:13px;color:#111827;line-height:1.5;">'
+            f'<div style="font-size:10px;letter-spacing:0.2em;text-transform:uppercase;color:#4B5563;margin-bottom:4px;">From your notary</div>'
+            f'{_html.escape(appointment_note)}</div>'
+        )
+    html = f"""<!doctype html>
+<html><body style="margin:0;padding:0;background:#F4F7F9;font-family:Helvetica,Arial,sans-serif;color:#111827;">
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#F4F7F9;padding:32px 0;">
+  <tr><td align="center">
+    <table role="presentation" width="560" cellpadding="0" cellspacing="0" style="background:#ffffff;border:1px solid #E2E8F0;border-radius:4px;overflow:hidden;">
+      <tr><td style="background:#00317A;padding:20px 28px;">
+        <div style="color:#ffffff;font-family:Georgia,'Times New Roman',serif;font-size:20px;font-weight:700;">{_html.escape(firm)}</div>
+        <div style="color:rgba(255,255,255,0.7);font-size:10px;letter-spacing:2.5px;text-transform:uppercase;margin-top:2px;">Signer Intake · Friendly Reminder</div>
+      </td></tr>
+      <tr><td style="background:#DF0D1B;height:3px;line-height:3px;font-size:0;">&nbsp;</td></tr>
+      <tr><td style="padding:32px 28px 8px;">
+        <div style="font-size:10px;letter-spacing:2.5px;text-transform:uppercase;color:#00317A;margin-bottom:8px;">Reminder</div>
+        <h1 style="font-family:Georgia,'Times New Roman',serif;font-size:26px;color:#00317A;margin:0 0 12px;">One quick step before we meet</h1>
+        <p style="font-size:14px;line-height:1.6;color:#4B5563;margin:0 0 12px;">Hi {_html.escape(greeting)},</p>
+        <p style="font-size:14px;line-height:1.6;color:#111827;margin:0 0 6px;">
+          This is a friendly reminder from {_html.escape(notary_name or firm)}. Your appointment is scheduled for
+          <b style="color:#00317A;">{_html.escape(apt_display)}</b>.
+        </p>
+        <p style="font-size:14px;line-height:1.6;color:#111827;margin:0 0 18px;">
+          You have not yet completed your signer intake form. Please take one minute to fill in your details
+          so we can proceed smoothly at the appointment.
+        </p>
+        {note_block}
+        <table role="presentation" cellpadding="0" cellspacing="0" style="margin:8px 0 4px;"><tr><td style="background:#00317A;border-radius:3px;">
+          <a href="{public_url}" style="display:inline-block;padding:12px 22px;color:#ffffff;text-decoration:none;font-size:13px;font-weight:600;letter-spacing:0.5px;">Complete My Intake →</a>
+        </td></tr></table>
+        <p style="font-size:12px;line-height:1.6;color:#4B5563;margin:18px 0 0;">
+          Remember to bring a valid photo ID to your appointment.
+        </p>
+      </td></tr>
+      <tr><td style="padding:16px 28px;background:#00317A;color:rgba(255,255,255,0.55);font-size:10px;letter-spacing:2px;text-transform:uppercase;text-align:center;font-family:'Courier New',monospace;">{_html.escape(firm)}</td></tr>
+    </table>
+  </td></tr>
+</table></body></html>"""
+    return subject, html
+
+
 def _render_bounce_digest_email(notary_name: str, rows: list[dict], app_url: str) -> tuple[str, str]:
     subject = f"[Notarium] {len(rows)} certificate email{'s' if len(rows) != 1 else ''} bounced overnight"
     row_html = ""
@@ -166,6 +224,62 @@ def register_alerts(api, db, get_current_user):
             else:
                 errors += 1
         return {"sent": sent, "skipped": skipped, "errors": errors, "date": today.isoformat()}
+
+    async def _scan_and_send_intake_reminders():
+        """Find pending intakes whose appointment is ~24h out and send the signer a reminder.
+
+        Window: 20h → 32h from now. Skips intakes that have already been reminded
+        or that are missing signer_email / appointment_at.
+        """
+        now = datetime.now(timezone.utc)
+        window_start = (now + timedelta(hours=20)).isoformat()
+        window_end = (now + timedelta(hours=32)).isoformat()
+        app_url = os.environ.get("ALERT_APP_URL", "").rstrip("/")
+        cursor = db.signer_intakes.find({
+            "status": "pending",
+            "appointment_at": {"$gte": window_start, "$lte": window_end},
+            "signer_email": {"$exists": True, "$ne": ""},
+            "reminder_sent_at": {"$in": [None, ""]},
+        })
+        sent, skipped, errors = 0, 0, 0
+        async for intake in cursor:
+            signer_email = (intake.get("signer_email") or "").strip()
+            if not signer_email or "@" not in signer_email:
+                skipped += 1
+                continue
+            try:
+                notary = await db.users.find_one({"_id": ObjectId(intake["user_id"])})
+            except Exception:
+                errors += 1
+                continue
+            if not notary:
+                skipped += 1
+                continue
+            public_url = f"{app_url}/intake/{intake['token']}"
+            firm_name = notary.get("firm_name") or ""
+            subject, html = _render_intake_reminder_email(
+                signer_name=(intake.get("label") or "").split("–")[0].strip(),
+                notary_name=notary.get("name", ""),
+                firm_name=firm_name,
+                appointment_at=intake.get("appointment_at", ""),
+                appointment_note=intake.get("appointment_note", ""),
+                public_url=public_url,
+            )
+            email_id, err = await _send_email(signer_email, subject, html,
+                                              reply_to=notary.get("email"))
+            if email_id:
+                await db.signer_intakes.update_one(
+                    {"_id": intake["_id"]},
+                    {"$set": {
+                        "reminder_sent_at": now.isoformat(),
+                        "reminder_email_id": email_id,
+                    }},
+                )
+                sent += 1
+            else:
+                errors += 1
+        return {"sent": sent, "skipped": skipped, "errors": errors,
+                "window_start": window_start, "window_end": window_end}
 
     async def _scan_and_send_bounce_digests():
         now = datetime.now(timezone.utc)
@@ -248,6 +362,56 @@ def register_alerts(api, db, get_current_user):
             return {"accepted": True, "duplicate": True, "run_id": x_webhook_id}
         background.add_task(_scan_and_send_bounce_digests)
         return {"accepted": True, "run_id": x_webhook_id}
+
+    @api.post("/cron/intake-reminders")
+    async def cron_intake_reminders(
+        background: BackgroundTasks,
+        authorization: Optional[str] = Header(default=None),
+        x_webhook_id: Optional[str] = Header(default=None, alias="X-Webhook-Id"),
+    ):
+        _cron_auth(authorization)
+        proceed = await _record_cron_run("intake-reminders", x_webhook_id)
+        if not proceed:
+            return {"accepted": True, "duplicate": True, "run_id": x_webhook_id}
+        background.add_task(_scan_and_send_intake_reminders)
+        return {"accepted": True, "run_id": x_webhook_id}
+
+    @api.post("/intakes/{intake_id}/send-reminder")
+    async def send_intake_reminder_now(intake_id: str, user=Depends(get_current_user)):
+        """Notary can manually trigger the 24h reminder email early (used for previews or ad-hoc nudges)."""
+        try:
+            intake = await db.signer_intakes.find_one(
+                {"_id": ObjectId(intake_id), "user_id": user["_id"]})
+        except Exception:
+            raise HTTPException(status_code=400, detail="Invalid intake id")
+        if not intake:
+            raise HTTPException(status_code=404, detail="Intake not found")
+        if intake.get("status") != "pending":
+            raise HTTPException(status_code=400, detail="Intake is no longer pending.")
+        signer_email = (intake.get("signer_email") or "").strip()
+        if not signer_email or "@" not in signer_email:
+            raise HTTPException(status_code=400,
+                                detail="Add a signer email to this intake first.")
+        app_url = os.environ.get("ALERT_APP_URL", "").rstrip("/")
+        public_url = f"{app_url}/intake/{intake['token']}"
+        subject, html = _render_intake_reminder_email(
+            signer_name=(intake.get("label") or "").split("–")[0].strip(),
+            notary_name=user.get("name", ""),
+            firm_name=user.get("firm_name", ""),
+            appointment_at=intake.get("appointment_at", ""),
+            appointment_note=intake.get("appointment_note", ""),
+            public_url=public_url,
+        )
+        email_id, err = await _send_email(signer_email, subject, html,
+                                          reply_to=user.get("email"))
+        if not email_id:
+            raise HTTPException(status_code=400, detail=err or "Could not send email.")
+        now_iso = datetime.now(timezone.utc).isoformat()
+        await db.signer_intakes.update_one(
+            {"_id": intake["_id"]},
+            {"$set": {"reminder_sent_at": now_iso, "reminder_email_id": email_id}},
+        )
+        return {"ok": True, "email_id": email_id, "sent_to": signer_email}
 
     @api.get("/alerts/bounces")
     async def bounce_summary(user=Depends(get_current_user)):
