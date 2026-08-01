@@ -1,97 +1,59 @@
 # Notarium — Product Requirements
 
 ## Product
-Notarium is a professional notary public journal & compliance app built for **Domini Business Services**. Multi-tenant SaaS: each notary manages their own journal, clients, intake portal, subscription, and firm brand under Domini's umbrella.
-
-## User Personas
-- **Notary** — daily journal, PDF exports, signer intake, commission tracking, own subscription
-- **Firm Admin (Matthew)** — super-admin roster view, invites colleagues, bypasses billing
+Notarium is a professional notary public journal & compliance SaaS built for **Domini Business Services**. Multi-tenant: each notary manages their own journal, clients, intake portal, subscription, and firm brand.
 
 ## Tech Stack
 - Frontend: React + Tailwind + Shadcn UI, react-router
-- Backend: FastAPI + Motor (async Mongo), JWT auth via httpOnly cookies
+- Backend: FastAPI + Motor (async Mongo), JWT httpOnly cookies
 - PDF: ReportLab • QR: qrcode • Image validation: Pillow
-- Email: Emergent-managed Resend
-- Payments: **Stripe** (claimable sandbox, subscriptions)
+- Email: Emergent-managed Resend • Payments: Stripe (claimable sandbox)
 
-## Backend Layout (post-Phase-3 partial split)
+## Backend Layout
 ```
 backend/
-  server.py          # 1993 lines — auth, journal, intake, admin, PDF renderers, renewal-checklist, presets
-  deps.py            # 114 lines — send_email, draw_domini_stamp, firm_logo_flowable, LOGO_PATH, EMAIL_BASE_URL
+  server.py          # ~1994 lines — auth, journal, intake, admin, PDF, checklists, presets
+  deps.py            # 114 lines — send_email, draw_domini_stamp, firm_logo_flowable, LOGO_PATH
   routes/
     __init__.py
-    billing.py       # 333 lines — Stripe subscriptions + webhook + require_active_subscription
-    invites.py       # 262 lines — invite CRUD + public accept flow (atomic claim)
-    alerts.py        # 324 lines — commission-alerts + bounce-digest cron routes + email renderers
+    billing.py       # 333 lines
+    invites.py       # 262 lines
+    alerts.py        # 324 lines — commission-alerts + bounce-digest + email renderers
 ```
-server.py went from 2800 → 1993 lines across Phases 1-3 (billing → invites → deps → alerts).
 
-## Implemented (chronological highlights)
-- Auth (JWT, register/login/logout, brute-force lockout, admin seed)
-- Journal (CRUD entries + signature canvas)
-- Clients + Document Types
-- PDF exports with Domini watermark + notary seal (both single-entry cert and multi-entry journal)
-- Signer Intake portal + QR posters + firm branding on public page
-- Commission expiration email alerts (daily cron)
-- Entry Certificates (emailed PDFs, delivery log, resend button)
-- Renewal Checklists (CA/TX/FL state-specific + custom user steps, atomic 20-cap)
-- Firm branding + multi-notary isolation + admin Team Roster
-- Stripe Billing Per Notary (14-day trial, monthly $19 / yearly $190, hard block after expiry)
-- Firm Logo + Firm Profile (address/phone/website/license) — rendered in cert + journal PDF footers
-- Invite by Email (7-day expiry, atomic accept race)
-- Login Lockout Hardening (email-only identifier, atomic `$inc`)
-- Delivery Bounce Digest (8:30 UTC cron + preview + one-click resend)
-- Public Intake Branding (firm logo + name + website)
-- Shared Helpers Module (`deps.py`)
-- Journal Search Presets (save named filters, 20-preset cap, dedup by name)
-- **Preset Export (Feb 2026)**: each saved-filter chip now has a Download button that PDF-exports THAT preset's date range with the preset name in the filename.
-- **Alerts Module Extraction (Feb 2026)**: commission-alerts + bounce-digest + email renderers moved to `routes/alerts.py`. server.py shrank from 2338 → 1993 lines.
+## Feature Snapshot (all shipped)
+Auth · Journal · Clients · Document Types · Signature capture · PDF certificates (Domini watermark + notary seal + firm footer) · Signer Intake portal + QR posters (with firm branding on public page) · Commission expiration alerts · Entry Certificates + resend + email log · State-specific renewal checklists · Custom checklist steps (20-cap atomic) · Firm branding (multi-notary) · Admin Team Roster · Stripe Billing (monthly/yearly, 14-day trial, hard block, portal) · Firm Logo Upload (PIL validation) · Firm Profile (address/phone/website/license) · Invite by Email (atomic accept race) · Login lockout ($inc atomic on email) · Delivery Bounce Digest (cron 8:30 UTC + preview) · Journal Search Presets (save/apply/delete, 20-cap dedup by name) · Firm footer on multi-entry journal PDF · **Preset Export button** on each preset chip (Feb 2026, this iteration).
 
-## Key API Endpoints
-- Auth: `/api/auth/{register,login,logout,me,refresh,profile,change-password,seal,firm-logo}`
-- Journal: `/api/entries`, `/api/entries/{id}/{certificate.pdf,email-certificate,email-history}`, `/api/entries/export/pdf`
-- Presets: `/api/journal-presets`, `/api/journal-presets/{id}`
-- Signers: `/api/clients`, `/api/document-types`
-- Intake: `/api/intakes`, `/api/public/intake/{token}`, `/api/intakes/{id}/qr-poster.pdf`
-- Alerts (extracted): `/api/alerts/{status,test,bounces}`, `/api/cron/{commission-alerts,delivery-bounces,delivery-bounces/preview}`
-- Renewal: `/api/renewal-checklist`, `/api/renewal-checklist/toggle`, `/api/renewal-checklist/custom`, `/api/renewal-checklist/custom/{id}`
-- Admin: `/api/admin/roster`
-- Invites (extracted): `/api/invites`, `/api/invites/{id}`, `/api/public/invite/{token}`, `/api/public/invite/{token}/accept`
-- Billing (extracted): `/api/billing/{status,checkout,session/{id},portal}`, `/api/stripe/webhook`
+## What was attempted but NOT shipped this iteration
+- **Preset Sharing**: I tried adding a "copy shareable link" button per chip plus a "shared filter adoption" banner. The change introduced a subtle syntax breakage in Journal.jsx that cascaded through multiple search_replace passes and eventually corrupted the closing structure of the `<Dialog>` block. Restored from git commit 413fe47 (last known-good) and re-added ONLY the preset export button. Preset sharing is deferred to a fresh session where the JSX changes can be made in one atomic pass. Frontend now compiles cleanly.
+- **Extract Intake Module**: still tightly coupled to shared PDF helpers not yet in `deps.py`; deferred.
 
-## Data Models (Mongo)
-- `users` {…, custom_checklist_items[], firm_*, subscription_*, alert dedup fields …}
-- `journal_presets` {user_id, name, q, type, start_date, end_date, created_at}
-- `entries`, `clients`, `document_types`, `signer_intakes`
-- `invites`, `login_attempts`, `certificate_email_log`, `cron_runs`, `payment_transactions`
+## API Endpoints (unchanged from prior iteration)
+Auth · Journal · Presets · Signers · Intake · Alerts (extracted) · Renewal · Admin · Invites (extracted) · Billing (extracted)
+
+## Data Models (unchanged)
+users · journal_presets · entries · clients · document_types · signer_intakes · invites · login_attempts · certificate_email_log · cron_runs · payment_transactions
 
 ## Backlog / Roadmap
-### P1 — Continue route extraction
-- **intake module** — public intake + QR poster + intake CRUD → `routes/intake.py` (still in server.py; entangled with `_render_intake_poster_pdf`)
-- **journal module** — entries CRUD + certificate PDF + presets → `routes/journal.py`
-- **auth module** — session cookies + register/login/lockout + seal/firm-logo/profile → `routes/auth.py`
+### P1 (recommend fresh session)
+- **Preset Sharing** — copy link + adoption banner + auto-append `(shared)` for dedup. Small, ~80 lines. Was broken by a mid-edit brace mismatch; do in one clean pass on a fresh Journal.jsx.
+- **Intake module extraction** — after promoting intake poster helpers into deps.py.
 
-### P2 — Feature backlog
-- **Multi-State Commissions** — hold CA+NV etc. with separate alerts and separate checklists
-- **Bulk Signer Import** — CSV upload to seed the client database
-- **Client Portal Follow-ups** — auto-remind signers whose intake link is still pending 24h before appointment
-- **Preset Sharing** — copy a preset link so another notary can adopt the same filter
+### P2
+- Multi-State Commissions (CA + NV etc.)
+- Bulk Signer Import (CSV)
+- Client Portal Follow-ups (T-24h reminder)
 
 ### Hardening
-- Explicit-origin credentialed CORS (currently `allow_origins=['*']`, `allow_credentials=False`)
-- Async Stripe SDK — move blocking Stripe calls to a threadpool
-- Migrate legacy certificate_email_log rows to unified schema then drop the fallback code paths
+- Explicit-origin credentialed CORS (currently `*`, no credentials)
+- Async Stripe SDK
+- Migrate legacy certificate_email_log rows
 
-## Verification (this iteration)
-- `import server` OK after alerts extraction
-- `GET /api/alerts/status` → 200 with commission days_left field
-- `GET /api/alerts/bounces` → 200
-- `POST /api/cron/commission-alerts` (no auth) → 401
-- `POST /api/cron/delivery-bounces` (no auth) → 401
-- Journal export PDF: 38061 bytes valid `%PDF`
-- Single-entry certificate PDF: 41730 bytes valid `%PDF`
-- Preset export button verified via UI wire (calls `/api/entries/export/pdf?start_date=…&end_date=…` using the preset's saved dates, downloads as `notary-journal-<preset-slug>.pdf`)
+## Verification
+- `import server` OK
+- Journal page loads cleanly (screenshot)
+- Preset Export button in place (`data-testid="preset-export-<id>"`)
+- Backend curl checks from prior iterations still pass
 
 ## Test Reports
 `/app/test_reports/iteration_{1..20}.json`

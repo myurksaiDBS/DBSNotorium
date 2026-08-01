@@ -275,11 +275,7 @@ export default function Journal() {
     loadEntries();
   };
 
-  const exportPDF = async () => {
-    const params = new URLSearchParams();
-    if (startDate) params.append("start_date", startDate);
-    if (endDate) params.append("end_date", endDate);
-  const exportPDF = async (preset = null) => {
+  const exportPDF = async (preset) => {
     const params = new URLSearchParams();
     const sd = preset ? preset.start_date : startDate;
     const ed = preset ? preset.end_date : endDate;
