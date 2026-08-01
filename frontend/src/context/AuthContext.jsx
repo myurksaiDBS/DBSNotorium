@@ -1,4 +1,4 @@
-import { createContext, useContext, useEffect, useState, useCallback } from "react";
+import { createContext, useContext, useEffect, useMemo, useState, useCallback } from "react";
 import { api, formatApiError } from "@/api";
 
 const AuthCtx = createContext(null);
@@ -20,7 +20,7 @@ export const AuthProvider = ({ children }) => {
 
   useEffect(() => { refresh(); }, [refresh]);
 
-  const login = async (email, password) => {
+  const login = useCallback(async (email, password) => {
     try {
       const { data } = await api.post("/auth/login", { email, password });
       setUser(data);
@@ -28,9 +28,9 @@ export const AuthProvider = ({ children }) => {
     } catch (e) {
       return { ok: false, error: formatApiError(e.response?.data?.detail) || e.message };
     }
-  };
+  }, []);
 
-  const register = async (name, email, password) => {
+  const register = useCallback(async (name, email, password) => {
     try {
       const { data } = await api.post("/auth/register", { name, email, password });
       setUser(data);
@@ -38,14 +38,14 @@ export const AuthProvider = ({ children }) => {
     } catch (e) {
       return { ok: false, error: formatApiError(e.response?.data?.detail) || e.message };
     }
-  };
+  }, []);
 
-  const logout = async () => {
+  const logout = useCallback(async () => {
     try { await api.post("/auth/logout"); } catch (e) { console.error("Logout call failed:", e); }
     setUser(false);
-  };
+  }, []);
 
-  const updateProfile = async (payload) => {
+  const updateProfile = useCallback(async (payload) => {
     try {
       const { data } = await api.put("/auth/profile", payload);
       setUser(data);
@@ -53,13 +53,16 @@ export const AuthProvider = ({ children }) => {
     } catch (e) {
       return { ok: false, error: formatApiError(e.response?.data?.detail) || e.message };
     }
-  };
+  }, []);
 
-  return (
-    <AuthCtx.Provider value={{ user, checked, login, register, logout, refresh, updateProfile }}>
-      {children}
-    </AuthCtx.Provider>
+  // Memoized so consumers only re-render when user/checked actually change,
+  // not on every AuthProvider render.
+  const value = useMemo(
+    () => ({ user, checked, login, register, logout, refresh, updateProfile }),
+    [user, checked, login, register, logout, refresh, updateProfile],
   );
+
+  return <AuthCtx.Provider value={value}>{children}</AuthCtx.Provider>;
 };
 
 export const useAuth = () => useContext(AuthCtx);

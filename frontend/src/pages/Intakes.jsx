@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, useCallback } from "react";
 import { api } from "@/api";
 import { useNavigate } from "react-router-dom";
 import { Card } from "@/components/ui/card";
@@ -29,11 +29,11 @@ export default function Intakes() {
   const [posterNote, setPosterNote] = useState("");
   const nav = useNavigate();
 
-  const load = async () => {
+  const load = useCallback(async () => {
     const { data } = await api.get("/intakes");
     setItems(data);
-  };
-  useEffect(() => { load(); }, []);
+  }, []);
+  useEffect(() => { load(); }, [load]);
 
   const create = async (e) => {
     e.preventDefault();

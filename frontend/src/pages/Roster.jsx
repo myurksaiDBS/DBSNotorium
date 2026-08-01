@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, useCallback } from "react";
 import { useAuth } from "@/context/AuthContext";
 import { api } from "@/api";
 import { Card } from "@/components/ui/card";
@@ -21,11 +21,13 @@ export default function Roster() {
   const [err, setErr] = useState("");
   const [inviteOpen, setInviteOpen] = useState(false);
 
-  useEffect(() => {
+  const loadRoster = useCallback(() => {
     api.get("/admin/roster")
       .then((r) => setData(r.data))
       .catch((e) => setErr(e.response?.status === 403 ? "Admin only" : "Failed to load roster"));
   }, []);
+
+  useEffect(() => { loadRoster(); }, [loadRoster]);
 
   if (err) {
     return <div className="text-sm text-[#991B1B] p-6 bg-[#FDECEC] border border-[#F4B4B4] rounded-sm">{err}</div>;
