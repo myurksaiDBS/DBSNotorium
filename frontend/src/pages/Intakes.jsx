@@ -38,14 +38,24 @@ export default function Intakes() {
   const create = async (e) => {
     e.preventDefault();
     try {
-      const { data } = await api.post("/intakes", form);
+      // Convert datetime-local (naive local time) to a UTC ISO string so the
+      // backend cron windows compare against a canonical timezone.
+      const payload = { ...form };
+      if (payload.appointment_at) {
+        const local = new Date(payload.appointment_at);
+        if (!isNaN(local.getTime())) payload.appointment_at = local.toISOString();
+      }
+      const { data } = await api.post("/intakes", payload);
       toast.success("Pre-fill link created");
       setOpen(false);
       setForm({ label: "", appointment_note: "", expires_hours: 168, signer_email: "", appointment_at: "" });
       load();
       // Auto-open detail so user can copy
       setDetail(data);
-    } catch { toast.error("Failed to create link"); }
+    } catch (err) {
+      const msg = err?.response?.data?.detail;
+      toast.error(typeof msg === "string" ? msg : "Failed to create link");
+    }
   };
 
   const remove = async (id) => {
@@ -209,6 +219,7 @@ export default function Intakes() {
               <div>
                 <Label>Appointment date &amp; time</Label>
                 <Input type="datetime-local" value={form.appointment_at} onChange={(e) => setForm({...form, appointment_at: e.target.value})} className="mt-1 rounded-sm" data-testid="intake-appointment-at" />
+                <div className="text-[10px] text-[#4B5563] mt-1">Uses your local time zone</div>
               </div>
             </div>
             <div className="text-xs text-[#4B5563] -mt-2 leading-relaxed">

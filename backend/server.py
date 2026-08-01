@@ -23,7 +23,7 @@ from pymongo.errors import DuplicateKeyError
 from fastapi import FastAPI, APIRouter, HTTPException, Depends, Request, Response, Query, Header, BackgroundTasks
 from fastapi.responses import StreamingResponse
 from motor.motor_asyncio import AsyncIOMotorClient
-from pydantic import BaseModel, Field, EmailStr, BeforeValidator, ConfigDict
+from pydantic import BaseModel, Field, EmailStr, BeforeValidator, ConfigDict, field_validator
 from starlette.middleware.cors import CORSMiddleware
 
 from reportlab.lib.pagesizes import letter, landscape
@@ -161,6 +161,38 @@ class IntakeCreateIn(BaseModel):
     expires_hours: int = 168           # 7 days default
     signer_email: Optional[str] = ""   # For 24h follow-up reminders
     appointment_at: Optional[str] = ""  # ISO datetime — powers 24h reminder cron
+
+    @field_validator("signer_email")
+    @classmethod
+    def _validate_signer_email(cls, v: Optional[str]) -> str:
+        v = (v or "").strip()
+        if not v:
+            return ""
+        # Basic RFC-5321-ish check: exactly one @, non-empty local and domain, TLD-ish domain.
+        if v.count("@") != 1:
+            raise ValueError("signer_email must be a valid email address")
+        local, domain = v.split("@", 1)
+        if not local or "." not in domain or domain.startswith(".") or domain.endswith("."):
+            raise ValueError("signer_email must be a valid email address")
+        return v.lower()
+
+    @field_validator("appointment_at")
+    @classmethod
+    def _validate_appointment_at(cls, v: Optional[str]) -> str:
+        v = (v or "").strip()
+        if not v:
+            return ""
+        # Accept "2026-08-02T15:30" (naive, treated as UTC) or "…+00:00" / "…Z" (aware).
+        raw = v.replace("Z", "+00:00")
+        try:
+            dt = datetime.fromisoformat(raw)
+        except ValueError:
+            raise ValueError("appointment_at must be an ISO 8601 datetime")
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        else:
+            dt = dt.astimezone(timezone.utc)
+        return dt.isoformat()
 
 class IntakeSubmitIn(BaseModel):
     signer_name: str = Field(min_length=1)

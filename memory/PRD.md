@@ -22,7 +22,7 @@ backend/
 ```
 
 ## Feature Snapshot (all shipped)
-Auth · Journal · Clients · Document Types · Signature capture · PDF certificates (Domini watermark + notary seal + firm footer) · Signer Intake portal + QR posters (with firm branding on public page) · Commission expiration alerts · Entry Certificates + resend + email log · State-specific renewal checklists · Custom checklist steps (20-cap atomic) · Firm branding (multi-notary) · Admin Team Roster · Stripe Billing (monthly/yearly, 14-day trial, hard block, portal) · Firm Logo Upload (PIL validation) · Firm Profile (address/phone/website/license) · Invite by Email (atomic accept race) · Login lockout ($inc atomic on email) · Delivery Bounce Digest (cron 8:30 UTC + preview) · Journal Search Presets (save/apply/delete, 20-cap dedup by name) · Firm footer on multi-entry journal PDF · **Preset Export button** on each preset chip (Feb 2026, this iteration).
+Auth · Journal · Clients · Document Types · Signature capture · PDF certificates (Domini watermark + notary seal + firm footer) · Signer Intake portal + QR posters (with firm branding on public page) · Commission expiration alerts · Entry Certificates + resend + email log · State-specific renewal checklists · Custom checklist steps (20-cap atomic) · Firm branding (multi-notary) · Admin Team Roster · Stripe Billing (monthly/yearly, 14-day trial, hard block, portal) · Firm Logo Upload (PIL validation) · Firm Profile (address/phone/website/license) · Invite by Email (atomic accept race) · Login lockout ($inc atomic on email) · Delivery Bounce Digest (cron 8:30 UTC + preview) · Journal Search Presets (save/apply/delete, 20-cap dedup by name) · Firm footer on multi-entry journal PDF · Preset Export button on each preset chip · **Client Portal Follow-ups** — signer intake now accepts `signer_email` + `appointment_at`, cron `/api/cron/intake-reminders` runs every 4h and emails signers whose appointment is 20-32h away, plus a manual "Remind" row action (Feb 2026, this iteration).
 
 ## What was attempted but NOT shipped this iteration
 - **Preset Sharing**: I tried adding a "copy shareable link" button per chip plus a "shared filter adoption" banner. The change introduced a subtle syntax breakage in Journal.jsx that cascaded through multiple search_replace passes and eventually corrupted the closing structure of the `<Dialog>` block. Restored from git commit 413fe47 (last known-good) and re-added ONLY the preset export button. Preset sharing is deferred to a fresh session where the JSX changes can be made in one atomic pass. Frontend now compiles cleanly.
@@ -42,7 +42,7 @@ users · journal_presets · entries · clients · document_types · signer_intak
 ### P2
 - Multi-State Commissions (CA + NV etc.)
 - Bulk Signer Import (CSV)
-- Client Portal Follow-ups (T-24h reminder)
+- ~~Client Portal Follow-ups (T-24h reminder)~~ ✅ shipped Feb 2026
 
 ### Hardening
 - Explicit-origin credentialed CORS (currently `*`, no credentials)
@@ -56,4 +56,10 @@ users · journal_presets · entries · clients · document_types · signer_intak
 - Backend curl checks from prior iterations still pass
 
 ## Test Reports
-`/app/test_reports/iteration_{1..20}.json`
+`/app/test_reports/iteration_{1..21}.json`
+
+## Iteration 21 (Feb 2026) — Client Portal Follow-ups
+- **Backend**: `IntakeCreateIn` extended with `signer_email` + `appointment_at` (validated as email format + ISO 8601 datetime, normalized to UTC). Cron `/api/cron/intake-reminders` (Bearer-protected, idempotent via `X-Webhook-Id`) scans pending intakes in a 20-32h window and emails the signer a Domini-branded reminder. Manual `/api/intakes/{id}/send-reminder` lets a notary nudge the signer early.
+- **Frontend**: `pages/Intakes.jsx` — Signer Email + Appointment Date/Time fields on the create dialog (datetime-local, converted to UTC on submit). Row-level "Remind" button appears when both fields are set and no reminder has gone out yet.
+- **Cron config**: `.emergent/crons.yml` — new `intake-reminders` job every 4h.
+- **Verified**: 422 on invalid email/datetime, naive datetime → UTC normalization, cron auth + idempotency, only in-window intakes get reminded.
