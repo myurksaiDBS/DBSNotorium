@@ -14,7 +14,7 @@ import {
 } from "@/components/ui/dialog";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Badge } from "@/components/ui/badge";
-import { Plus, Search, FileDown, Trash2, Eye, Pencil, Mail, FileText, Copy, ClipboardList, RotateCcw } from "lucide-react";
+import { Plus, Search, FileDown, Trash2, Eye, Pencil, Mail, FileText, Copy, ClipboardList, RotateCcw, Bookmark, BookmarkPlus, X } from "lucide-react";
 import SignaturePad from "@/components/SignaturePad";
 import { toast } from "sonner";
 import { API } from "@/api";
@@ -67,6 +67,57 @@ export default function Journal() {
   const [sending, setSending] = useState(false);
   const [emailHistory, setEmailHistory] = useState([]);
   const [historyLoading, setHistoryLoading] = useState(false);
+  const [presets, setPresets] = useState([]);
+  const [activePreset, setActivePreset] = useState(null);
+  const [saveName, setSaveName] = useState("");
+  const [savingPreset, setSavingPreset] = useState(false);
+  const hasActiveFilters = !!(q || (typeFilter && typeFilter !== "all") || startDate || endDate);
+
+  const loadPresets = async () => {
+    try {
+      const { data } = await api.get("/journal-presets");
+      setPresets(data || []);
+    } catch { /* no-op */ }
+  };
+  const applyPreset = (p) => {
+    setQ(p.q || "");
+    setTypeFilter(p.type || "all");
+    setStartDate(p.start_date || "");
+    setEndDate(p.end_date || "");
+    setActivePreset(p.id);
+    toast.success(`Applied "${p.name}"`);
+  };
+  const clearFilters = () => {
+    setQ(""); setTypeFilter("all"); setStartDate(""); setEndDate("");
+    setActivePreset(null);
+  };
+  const savePreset = async (e) => {
+    e.preventDefault();
+    const name = saveName.trim();
+    if (!name) { toast.error("Give this filter a name"); return; }
+    setSavingPreset(true);
+    try {
+      await api.post("/journal-presets", {
+        name, q, type: typeFilter === "all" ? "" : typeFilter,
+        start_date: startDate, end_date: endDate,
+      });
+      toast.success(`Saved "${name}"`);
+      setSaveName("");
+      loadPresets();
+    } catch (err) {
+      toast.error(err.response?.data?.detail || "Could not save preset");
+    } finally { setSavingPreset(false); }
+  };
+  const deletePreset = async (id, name) => {
+    if (!window.confirm(`Delete "${name}"?`)) return;
+    try {
+      await api.delete(`/journal-presets/${id}`);
+      if (activePreset === id) setActivePreset(null);
+      loadPresets();
+    } catch (err) {
+      toast.error(err.response?.data?.detail || "Could not delete");
+    }
+  };
 
   const loadEmailHistory = async (entryId) => {
     setHistoryLoading(true);
@@ -165,6 +216,7 @@ export default function Journal() {
 
   useEffect(() => { loadDocTypes(); }, []);
   useEffect(() => { loadEntries(); /* eslint-disable-next-line */ }, [q, typeFilter, startDate, endDate]);
+  useEffect(() => { loadPresets(); }, []);
 
   const openCreate = () => {
     setEditingId(null);
@@ -267,21 +319,90 @@ export default function Journal() {
 
       {/* Filters */}
       <Card className="p-4 border-[#E2E8F0] rounded-sm shadow-none bg-white">
+        {/* Saved-filter chips */}
+        {(presets.length > 0 || hasActiveFilters) && (
+          <div className="flex items-center flex-wrap gap-2 pb-3 mb-3 border-b border-[#E2E8F0]" data-testid="preset-bar">
+            <span className="text-[10px] uppercase tracking-[0.25em] text-[#4B5563] mr-1">
+              <Bookmark className="w-3 h-3 inline mr-1" />Saved
+            </span>
+            {presets.map((p) => (
+              <div key={p.id}
+                   className={`group flex items-center rounded-sm border text-xs transition-colors ${
+                     activePreset === p.id
+                       ? "bg-[#00317A] border-[#00317A] text-white"
+                       : "bg-white border-[#E2E8F0] text-[#111827] hover:border-[#00317A]/40"
+                   }`}
+                   data-testid={`preset-${p.id}`}>
+                <button
+                  type="button"
+                  onClick={() => applyPreset(p)}
+                  className="pl-2.5 pr-1.5 py-1"
+                  title={`${p.q || "(any)"} · ${p.type || "any type"} · ${p.start_date || "…"}—${p.end_date || "…"}`}
+                >
+                  {p.name}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => deletePreset(p.id, p.name)}
+                  className={`px-1.5 py-1 rounded-r-sm ${
+                    activePreset === p.id ? "hover:bg-[#00265E]" : "hover:bg-[#FDECEC] text-[#4B5563] hover:text-[#991B1B]"
+                  }`}
+                  data-testid={`preset-delete-${p.id}`}
+                  aria-label="Delete preset"
+                >
+                  <X className="w-3 h-3" />
+                </button>
+              </div>
+            ))}
+            {hasActiveFilters && (
+              <button
+                type="button"
+                onClick={clearFilters}
+                className="text-xs text-[#DF0D1B] hover:underline ml-1"
+                data-testid="clear-filters-btn"
+              >
+                Clear
+              </button>
+            )}
+            {hasActiveFilters && (
+              <form onSubmit={savePreset} className="ml-auto flex items-center gap-1" data-testid="save-preset-form">
+                <Input
+                  value={saveName}
+                  onChange={(e) => setSaveName(e.target.value)}
+                  placeholder="Name this filter"
+                  maxLength={60}
+                  className="rounded-sm h-8 text-xs w-44"
+                  data-testid="save-preset-input"
+                />
+                <Button
+                  type="submit"
+                  size="sm"
+                  disabled={savingPreset || !saveName.trim()}
+                  className="rounded-sm h-8 bg-[#00317A] hover:bg-[#00265E] text-white text-xs"
+                  data-testid="save-preset-btn"
+                >
+                  <BookmarkPlus className="w-3.5 h-3.5 mr-1" />
+                  {savingPreset ? "…" : "Save"}
+                </Button>
+              </form>
+            )}
+          </div>
+        )}
         <div className="grid grid-cols-1 md:grid-cols-5 gap-3">
           <div className="md:col-span-2 relative">
             <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-[#4B5563]" />
-            <Input placeholder="Search signer, document, ID..." value={q} onChange={(e) => setQ(e.target.value)}
+            <Input placeholder="Search signer, document, ID..." value={q} onChange={(e) => { setQ(e.target.value); setActivePreset(null); }}
               className="pl-9 rounded-sm h-10" data-testid="journal-search" />
           </div>
-          <Select value={typeFilter} onValueChange={setTypeFilter}>
+          <Select value={typeFilter} onValueChange={(v) => { setTypeFilter(v); setActivePreset(null); }}>
             <SelectTrigger className="rounded-sm h-10" data-testid="type-filter"><SelectValue /></SelectTrigger>
             <SelectContent>
               <SelectItem value="all">All types</SelectItem>
               {NOTARIZATION_TYPES.map(t => <SelectItem key={t} value={t}>{t}</SelectItem>)}
             </SelectContent>
           </Select>
-          <Input type="date" value={startDate} onChange={(e) => setStartDate(e.target.value)} className="rounded-sm h-10" data-testid="start-date-filter" />
-          <Input type="date" value={endDate} onChange={(e) => setEndDate(e.target.value)} className="rounded-sm h-10" data-testid="end-date-filter" />
+          <Input type="date" value={startDate} onChange={(e) => { setStartDate(e.target.value); setActivePreset(null); }} className="rounded-sm h-10" data-testid="start-date-filter" />
+          <Input type="date" value={endDate} onChange={(e) => { setEndDate(e.target.value); setActivePreset(null); }} className="rounded-sm h-10" data-testid="end-date-filter" />
         </div>
       </Card>
 

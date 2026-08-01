@@ -36,7 +36,13 @@ from reportlab.lib.utils import ImageReader
 
 import stripe
 
-LOGO_PATH = ROOT_DIR / "assets" / "domini-logo.png"
+# Shared helpers (send_email, PDF stamps) — promoted so route modules can reuse.
+from deps import (
+    LOGO_PATH, EMAIL_BASE_URL,
+    send_email as _send_email,
+    draw_domini_stamp as _draw_domini_stamp,
+    firm_logo_flowable as _firm_logo_flowable,
+)
 
 # -------- Mongo --------
 mongo_url = os.environ['MONGO_URL']
@@ -402,7 +408,6 @@ require_active_subscription = register_billing(api, db, get_current_user)
 
 
 # ---- Commission Alerts (Resend email) ----
-EMAIL_BASE_URL = "https://integrations.emergentagent.com"
 # Ordered smallest → largest so we pick the tightest still-valid threshold.
 # e.g. at 5 days left we want the 7-day notice, not the 60-day notice.
 ALERT_BUCKETS = [0, 1, 7, 14, 30, 60]
@@ -491,39 +496,6 @@ def _render_commission_email(notary_name: str, days_left: int, expires_on: date,
   </td></tr>
 </table></body></html>"""
     return subject, html
-
-async def _send_email(to_email: str, subject: str, html: str,
-                      reply_to: Optional[str] = None) -> tuple[Optional[str], Optional[str]]:
-    """Return (email_id, error_message). email_id set on success; error_message on failure."""
-    key = os.environ.get("EMERGENT_EMAIL_KEY")
-    from_name = os.environ.get("EMAIL_FROM_NAME", "Domini Business Services")
-    if not key:
-        logging.warning("EMERGENT_EMAIL_KEY not configured; skipping email send")
-        return None, "Email is not configured on this server."
-    payload = {"to": [to_email], "subject": subject, "html": html, "from_name": from_name}
-    if reply_to:
-        payload["contact_email"] = reply_to
-    try:
-        async with httpx.AsyncClient(timeout=30) as client:
-            resp = await client.post(
-                f"{EMAIL_BASE_URL}/api/v1/email/send",
-                headers={"X-Email-Key": key},
-                json=payload,
-            )
-        resp.raise_for_status()
-        return resp.json().get("id"), None
-    except httpx.HTTPStatusError as e:
-        detail = e.response.text
-        try:
-            data = e.response.json()
-            detail = data.get("message") or data.get("error") or detail
-        except Exception:
-            pass
-        logging.error(f"Email send failed: {e.response.status_code} {detail}")
-        return None, detail or f"Email provider returned {e.response.status_code}."
-    except Exception as e:
-        logging.error(f"Email send error: {e}")
-        return None, "Could not reach the email service."
 
 async def _scan_and_send_alerts() -> dict:
     """Iterate users, send alerts for those hitting a new bucket. Returns summary."""
@@ -783,6 +755,66 @@ async def alerts_status(user=Depends(get_current_user)):
         "upcoming_alerts": upcoming,
     }
 
+# ---- Journal Search Presets ----
+class JournalPresetIn(BaseModel):
+    name: str
+    q: Optional[str] = None
+    type: Optional[str] = None
+    start_date: Optional[str] = None
+    end_date: Optional[str] = None
+
+
+@api.get("/journal-presets")
+async def list_journal_presets(user=Depends(get_current_user)):
+    docs = await db.journal_presets.find({"user_id": user["_id"]}) \
+        .sort("created_at", 1).to_list(100)
+    return [{
+        "id": str(d["_id"]),
+        "name": d["name"],
+        "q": d.get("q") or "",
+        "type": d.get("type") or "",
+        "start_date": d.get("start_date") or "",
+        "end_date": d.get("end_date") or "",
+        "created_at": d.get("created_at"),
+    } for d in docs]
+
+
+@api.post("/journal-presets")
+async def create_journal_preset(payload: JournalPresetIn, user=Depends(get_current_user)):
+    name = payload.name.strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="Preset name cannot be empty.")
+    if len(name) > 60:
+        raise HTTPException(status_code=400, detail="Preset name must be under 60 characters.")
+    # Atomic 20-preset cap using the array-index-exists trick — same pattern
+    # as the custom checklist steps to survive concurrent creation.
+    count = await db.journal_presets.count_documents({"user_id": user["_id"]})
+    if count >= 20:
+        raise HTTPException(status_code=400, detail="Maximum 20 saved filters.")
+    if await db.journal_presets.find_one({"user_id": user["_id"], "name": name}):
+        raise HTTPException(status_code=400, detail="A preset with that name already exists.")
+    doc = {
+        "user_id": user["_id"],
+        "name": name,
+        "q": (payload.q or "").strip(),
+        "type": (payload.type or "").strip(),
+        "start_date": (payload.start_date or "").strip(),
+        "end_date": (payload.end_date or "").strip(),
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    }
+    result = await db.journal_presets.insert_one(doc)
+    return {"id": str(result.inserted_id), **{k: doc[k] for k in ("name","q","type","start_date","end_date","created_at")}}
+
+
+@api.delete("/journal-presets/{preset_id}")
+async def delete_journal_preset(preset_id: str, user=Depends(get_current_user)):
+    result = await db.journal_presets.delete_one(
+        {"_id": _to_oid(preset_id), "user_id": user["_id"]})
+    if result.deleted_count == 0:
+        raise HTTPException(status_code=404, detail="Preset not found")
+    return {"ok": True}
+
+
 # ---- Journal Entries ----
 @api.get("/entries")
 async def list_entries(
@@ -863,55 +895,6 @@ async def delete_entry(entry_id: str, user=Depends(require_active_subscription))
     return {"ok": True}
 
 # ---- Certificate rendering + helpers ----
-def _draw_domini_stamp(canvas, page_w, page_h, doc_page: int):
-    """Draw watermark shield + Domini footer (portrait or landscape aware)."""
-    canvas.saveState()
-    if LOGO_PATH.exists():
-        try:
-            canvas.setFillAlpha(0.06)
-            img = ImageReader(str(LOGO_PATH))
-            size = min(page_w, page_h) * 0.55
-            canvas.drawImage(img, (page_w - size) / 2, (page_h - size) / 2,
-                             width=size, height=size, mask="auto",
-                             preserveAspectRatio=True)
-            canvas.setFillAlpha(1.0)
-            foot = 0.4 * inch
-            canvas.drawImage(img, 0.4 * inch, 0.2 * inch,
-                             width=foot, height=foot, mask="auto",
-                             preserveAspectRatio=True)
-        except Exception:
-            pass
-    canvas.setFont("Helvetica", 8)
-    canvas.setFillColor(colors.HexColor("#4B5563"))
-    canvas.drawString(0.95 * inch, 0.35 * inch,
-                      "Domini Business Services  ·  Notary Journal")
-    canvas.setFont("Helvetica-Oblique", 7)
-    canvas.setFillColor(colors.HexColor("#94A3B8"))
-    canvas.drawString(0.95 * inch, 0.22 * inch,
-                      "A Division of YFI Enterprises, LLC")
-    canvas.setFont("Helvetica", 8)
-    canvas.setFillColor(colors.HexColor("#4B5563"))
-    canvas.drawRightString(page_w - 0.4 * inch, 0.3 * inch, f"Page {doc_page}")
-    canvas.setStrokeColor(colors.HexColor("#DF0D1B"))
-    canvas.setLineWidth(2)
-    canvas.line(0.4 * inch, page_h - 0.28 * inch,
-                page_w - 0.4 * inch, page_h - 0.28 * inch)
-    canvas.restoreState()
-
-def _firm_logo_flowable(notary: dict, height_in: float = 0.55):
-    """Return a small firm logo Image flowable if the user has uploaded one."""
-    data = notary.get("firm_logo_data") or ""
-    if not (data.startswith("data:image/") and "base64," in data):
-        return None
-    try:
-        raw = base64.b64decode(data.split("base64,", 1)[1])
-        img = RLImage(io.BytesIO(raw), height=height_in * inch, width=height_in * inch * 2.2, kind='proportional')
-        img.hAlign = 'RIGHT'
-        return img
-    except Exception:
-        return None
-
-
 def _render_certificate_pdf(entry: dict, notary: dict) -> bytes:
     """Single-page letter portrait branded certificate for one entry."""
     from reportlab.lib.pagesizes import letter as _letter
