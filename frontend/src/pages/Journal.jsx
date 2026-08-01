@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, useCallback } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 import { api } from "@/api";
 import { Card } from "@/components/ui/card";
@@ -73,12 +73,12 @@ export default function Journal() {
   const [savingPreset, setSavingPreset] = useState(false);
   const hasActiveFilters = !!(q || (typeFilter && typeFilter !== "all") || startDate || endDate);
 
-  const loadPresets = async () => {
+  const loadPresets = useCallback(async () => {
     try {
       const { data } = await api.get("/journal-presets");
       setPresets(data || []);
     } catch (e) { console.error("Load presets failed:", e); }
-  };
+  }, []);
   const applyPreset = (p) => {
     setQ(p.q || "");
     setTypeFilter(p.type || "all");
@@ -119,21 +119,20 @@ export default function Journal() {
     }
   };
 
-  const loadEmailHistory = async (entryId) => {
+  const loadEmailHistory = useCallback(async (entryId) => {
     setHistoryLoading(true);
     try {
       const { data } = await api.get(`/entries/${entryId}/email-history`);
       setEmailHistory(data);
     } catch (e) { console.error("Load email history failed:", e); setEmailHistory([]); }
     finally { setHistoryLoading(false); }
-  };
+  }, []);
 
   // Refresh history whenever the view dialog opens for an entry
   useEffect(() => {
     if (viewing?.id) loadEmailHistory(viewing.id);
     else setEmailHistory([]);
-    // eslint-disable-next-line
-  }, [viewing?.id]);
+  }, [viewing?.id, loadEmailHistory]);
 
   const openEmailDialog = (entry) => {
     setEmailingEntry(entry);
@@ -174,29 +173,29 @@ export default function Journal() {
   // If arriving from an Intake, prefill and open the New Entry dialog
   useEffect(() => {
     const prefill = location.state?.prefill;
-    if (prefill) {
-      setEditingId(null);
-      setForm({
-        ...emptyForm,
-        signer_name: prefill.signer_name || "",
-        signer_address: prefill.signer_address || "",
-        signer_phone: prefill.signer_phone || "",
-        signer_email: prefill.signer_email || "",
-        id_type: prefill.id_type || "Driver's License",
-        id_number: prefill.id_number || "",
-        id_expiration: prefill.id_expiration || "",
-        id_issued_by: prefill.id_issued_by || "",
-        notes: prefill.notes || "",
-        document_type: form.document_type,
-      });
-      setOpen(true);
-      // Clear location state so refresh doesn't reopen
-      nav("/journal", { replace: true, state: {} });
-    }
-    // eslint-disable-next-line
-  }, [location.state]);
+    if (!prefill) return;
+    setEditingId(null);
+    // Use functional setForm so we keep the current document_type without
+    // depending on `form` (which would re-fire this effect on every keystroke).
+    setForm(f => ({
+      ...emptyForm,
+      signer_name: prefill.signer_name || "",
+      signer_address: prefill.signer_address || "",
+      signer_phone: prefill.signer_phone || "",
+      signer_email: prefill.signer_email || "",
+      id_type: prefill.id_type || "Driver's License",
+      id_number: prefill.id_number || "",
+      id_expiration: prefill.id_expiration || "",
+      id_issued_by: prefill.id_issued_by || "",
+      notes: prefill.notes || "",
+      document_type: f.document_type,
+    }));
+    setOpen(true);
+    // Clear location state so refresh doesn't reopen
+    nav("/journal", { replace: true, state: {} });
+  }, [location.state, nav]);
 
-  const loadEntries = async () => {
+  const loadEntries = useCallback(async () => {
     const params = {};
     if (q) params.q = q;
     if (typeFilter !== "all") params.notarization_type = typeFilter;
@@ -204,19 +203,21 @@ export default function Journal() {
     if (endDate) params.end_date = endDate;
     const { data } = await api.get("/entries", { params });
     setEntries(data);
-  };
+  }, [q, typeFilter, startDate, endDate]);
 
-  const loadDocTypes = async () => {
+  const loadDocTypes = useCallback(async () => {
     const { data } = await api.get("/document-types");
     setDocTypes(data);
-    if (data.length && !form.document_type) {
-      setForm(f => ({ ...f, document_type: data[0].name }));
+    // Only seed the default document type when the form hasn't chosen one yet;
+    // functional setForm keeps this hook independent of `form`.
+    if (data.length) {
+      setForm(f => (f.document_type ? f : { ...f, document_type: data[0].name }));
     }
-  };
+  }, []);
 
-  useEffect(() => { loadDocTypes(); }, []);
-  useEffect(() => { loadEntries(); /* eslint-disable-next-line */ }, [q, typeFilter, startDate, endDate]);
-  useEffect(() => { loadPresets(); }, []);
+  useEffect(() => { loadDocTypes(); }, [loadDocTypes]);
+  useEffect(() => { loadEntries(); }, [loadEntries]);
+  useEffect(() => { loadPresets(); }, [loadPresets]);
 
   const openCreate = () => {
     setEditingId(null);

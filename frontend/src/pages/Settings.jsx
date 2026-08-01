@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, useCallback } from "react";
 import { useAuth } from "@/context/AuthContext";
 import { api, formatApiError } from "@/api";
 import { Card } from "@/components/ui/card";
@@ -42,24 +42,24 @@ export default function Settings() {
   const sealInputRef = useRef(null);
   const firmLogoInputRef = useRef(null);
 
-  const loadStatus = async () => {
+  const loadStatus = useCallback(async () => {
     try {
       const { data } = await api.get("/alerts/status");
       setAlertsStatus(data);
     } catch (e) { console.error("Load alerts status failed:", e); }
-  };
-  const loadChecklist = async () => {
+  }, []);
+  const loadChecklist = useCallback(async () => {
     try {
       const { data } = await api.get("/renewal-checklist");
       setChecklist(data);
     } catch (e) { console.error("Load checklist failed:", e); }
-  };
-  const loadSeal = async () => {
+  }, []);
+  const loadSeal = useCallback(async () => {
     try {
       const { data } = await api.get("/auth/seal");
       setSeal(data);
     } catch (e) { console.error("Load seal failed:", e); }
-  };
+  }, []);
   const onSealPick = (e) => {
     const file = e.target.files?.[0];
     if (!file) return;
@@ -90,12 +90,12 @@ export default function Settings() {
     toast.success("Seal removed");
     loadSeal();
   };
-  const loadFirmLogo = async () => {
+  const loadFirmLogo = useCallback(async () => {
     try {
       const { data } = await api.get("/auth/firm-logo");
       setFirmLogo(data);
     } catch (e) { console.error("Load firm logo failed:", e); }
-  };
+  }, []);
   const onFirmLogoPick = (e) => {
     const file = e.target.files?.[0];
     if (!file) return;
@@ -143,14 +143,16 @@ export default function Settings() {
     } finally { setPwdSaving(false); }
   };
 
-  useEffect(() => { loadStatus(); loadChecklist(); loadSeal(); loadFirmLogo(); loadBounces(); }, []);
-
-  const loadBounces = async () => {
+  const loadBounces = useCallback(async () => {
     try {
       const { data } = await api.get("/alerts/bounces");
       setBounces(data);
     } catch (e) { console.error("Load bounces failed:", e); }
-  };
+  }, []);
+
+  useEffect(() => {
+    loadStatus(); loadChecklist(); loadSeal(); loadFirmLogo(); loadBounces();
+  }, [loadStatus, loadChecklist, loadSeal, loadFirmLogo, loadBounces]);
 
   const saveFirmProfile = async (e) => {
     e.preventDefault();

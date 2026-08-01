@@ -61,8 +61,10 @@ export default function Billing() {
     };
     poll();
     return () => { cancelled = true; };
+    // params/setParams intentionally omitted — useSearchParams returns a
+    // new object on every URL change and would restart the Stripe poll loop.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [load]);
 
   const subscribe = async (lookupKey) => {
     setBusy(lookupKey);

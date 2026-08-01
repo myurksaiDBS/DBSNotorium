@@ -1,4 +1,4 @@
-import { useEffect, useRef, useImperativeHandle, forwardRef, useState } from "react";
+import { useEffect, useRef, useImperativeHandle, forwardRef, useState, useCallback } from "react";
 import { Button } from "@/components/ui/button";
 import { Eraser } from "lucide-react";
 
@@ -10,7 +10,7 @@ const SignaturePad = forwardRef(({ initialData = "", height = 180 }, ref) => {
 
   const getCtx = () => canvasRef.current?.getContext("2d");
 
-  const setupCanvas = () => {
+  const setupCanvas = useCallback(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
     const rect = canvas.getBoundingClientRect();
@@ -23,25 +23,30 @@ const SignaturePad = forwardRef(({ initialData = "", height = 180 }, ref) => {
     ctx.lineCap = "round";
     ctx.lineJoin = "round";
     ctx.strokeStyle = "#00317A";
-  };
+  }, []);
 
+  // Mount: size the canvas + install a resize listener (once).
   useEffect(() => {
     setupCanvas();
-    if (initialData) {
-      const img = new Image();
-      img.onload = () => {
-        const ctx = getCtx();
-        const canvas = canvasRef.current;
-        const rect = canvas.getBoundingClientRect();
-        ctx.drawImage(img, 0, 0, rect.width, rect.height);
-      };
-      img.src = initialData;
-    }
     const onResize = () => setupCanvas();
     window.addEventListener("resize", onResize);
     return () => window.removeEventListener("resize", onResize);
-    // eslint-disable-next-line
-  }, []);
+  }, [setupCanvas]);
+
+  // Redraw the seed signature when the prop changes (e.g. editing a different entry).
+  useEffect(() => {
+    if (!initialData) return;
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const img = new Image();
+    img.onload = () => {
+      const ctx = getCtx();
+      const rect = canvas.getBoundingClientRect();
+      ctx.drawImage(img, 0, 0, rect.width, rect.height);
+      setEmpty(false);
+    };
+    img.src = initialData;
+  }, [initialData]);
 
   const point = (e) => {
     const rect = canvasRef.current.getBoundingClientRect();
