@@ -33,13 +33,15 @@ Design and build a log application for a notary public with:
 - Entry Certificates (emailed PDFs, delivery log, resend button)
 - State-specific renewal checklists (CA/TX/FL, auto-unlock at 30 days)
 - Firm branding + multi-notary isolation, admin **Team Roster** view
-- **Stripe Billing Per Notary** (Feb 2026): monthly $19 / yearly $190, 14-day free trial, hard block after expiry, admin bypass, customer portal (both endpoints validate origin_url against ALERT_APP_URL allowlist), webhook sync
+- **Stripe Billing Per Notary** (Feb 2026): monthly $19 / yearly $190, 14-day free trial, hard block after expiry, admin bypass, customer portal (both endpoints origin-allowlisted), webhook sync
 - **Firm Logo Upload** (Feb 2026): PIL image validation, renders alongside Domini shield on certificates + QR posters
-- **Invite by Email** (Feb 2026): atomic invite claim + unique email index; concurrent-accept safe; 7-day expiry, revoke, list
-- **Login Lockout Hardening** (Feb 2026): identifier keyed on email only, atomic `$inc` increment
-- **Firm Profile** (Feb 2026): firm_address, firm_phone, firm_website, firm_license_number persisted via PUT /api/auth/profile (with explicit-null clearing via $set/$unset split); rendered in the certificate PDF footer only when set
-- **Delivery Bounce Alerts** (Feb 2026): daily 8:30 UTC cron emails each notary a digest of certificate emails that bounced in the last 24h with one-click resend links. `GET /api/alerts/bounces` for live view, `POST /api/cron/delivery-bounces/preview` for on-demand preview. Certificate log unified to `recipient`/`error_msg` with legacy `to`/`error` fallback throughout API + digest rendering.
-- **Modular Refactor v1** (Feb 2026): extracted Stripe billing (~330 lines) into `/app/backend/routes/billing.py` with a `register_billing(api, db, get_current_user)` function pattern. server.py shrank from 2800→2487 lines. Same pattern to extract auth, journal, invites, alerts next.
+- **Invite by Email** (Feb 2026): atomic invite claim + unique email index; concurrent-accept safe
+- **Login Lockout Hardening** (Feb 2026): identifier keyed on email only, atomic `$inc`
+- **Firm Profile** (Feb 2026): address, phone, website, license number persisted with explicit-null clearing; renders in certificate PDF footer
+- **Delivery Bounce Alerts** (Feb 2026): daily 8:30 UTC cron digest of certificate email bounces + one-click resend links; unified `recipient`/`error_msg` log schema with legacy fallback
+- **Custom Checklist Steps** (Feb 2026): notaries add up to 20 personal renewal steps alongside state-specific defaults; atomic 20-cap prevents concurrent overflow (`custom_checklist_items.19` guard); toggle + delete work like built-ins
+- **Public Intake Branding** (Feb 2026): public signer-intake page shows the notary's firm logo + name + website alongside the Domini shield
+- **Modular Refactor** (Feb 2026): billing routes → `/app/backend/routes/billing.py` (333 lines), invite routes → `/app/backend/routes/invites.py` (262 lines). server.py: 2800 → 2320 lines. Pattern: `register_*(api, db, get_current_user, deps)` called just before `app.include_router(api)`.
 
 ## Key API Endpoints
 - Auth: `/api/auth/{register,login,logout,me,refresh,profile,change-password,seal,firm-logo}`
@@ -47,49 +49,47 @@ Design and build a log application for a notary public with:
 - Signers: `/api/clients`, `/api/document-types`
 - Intake: `/api/intakes`, `/api/public/intake/{token}`, `/api/intakes/{id}/qr-poster.pdf`
 - Alerts: `/api/alerts/{status,test,bounces}`, `/api/cron/{commission-alerts,delivery-bounces,delivery-bounces/preview}`
-- Renewal: `/api/renewal-checklist`, `/api/renewal-checklist/toggle`
+- Renewal: `/api/renewal-checklist`, `/api/renewal-checklist/toggle`, `/api/renewal-checklist/custom`, `/api/renewal-checklist/custom/{id}`
 - Admin: `/api/admin/roster`
-- Invites: `/api/invites`, `/api/invites/{id}`, `/api/public/invite/{token}`, `/api/public/invite/{token}/accept`
-- Billing: `/api/billing/{status,checkout,session/{id},portal}`, `/api/stripe/webhook`
-
-## Data Models (Mongo)
-- `users` {email (unique), password_hash, name, role, firm_name, firm_address, firm_phone, firm_website, firm_license_number, state, seal_data, firm_logo_data, subscription_status, subscription_plan_key, stripe_customer_id, stripe_subscription_id, subscription_current_period_end, subscription_cancel_at_period_end, invited_by_user_id, created_at}
-- `entries`, `clients`, `document_types`, `signer_intakes`
-- `invites` {token (unique), email, firm_name, state, invited_by_user_id, invited_by_name, message, created_at, expires_at, used_at, email_status, email_error, accepted_user_id}
-- `login_attempts` {identifier (indexed), count, locked_until, updated_at}
-- `certificate_email_log` {user_id, entry_id, recipient, signer_name, subject, email_id, error_msg, status, sent_at, bounce_digest_sent, bounce_digest_sent_at} — legacy rows may use `to`/`error`; all readers fall back
-- `cron_runs`, `payment_transactions`
+- Invites (extracted): `/api/invites`, `/api/invites/{id}`, `/api/public/invite/{token}`, `/api/public/invite/{token}/accept`
+- Billing (extracted): `/api/billing/{status,checkout,session/{id},portal}`, `/api/stripe/webhook`
 
 ## Backend Layout
 ```
 backend/
-  server.py          # 2487 lines — remaining routes (auth, journal, invite, intake, admin, alerts, PDF)
+  server.py          # 2320 lines — remaining routes (auth, journal, intake, admin, alerts, PDF, renewal-checklist)
   routes/
     __init__.py
-    billing.py       # 330 lines — Stripe subscription + webhook + require_active_subscription gate
+    billing.py       # 333 lines — Stripe subscriptions + webhook + require_active_subscription
+    invites.py       # 262 lines — invite CRUD + public accept flow
 ```
+
+## Data Models (Mongo)
+- `users` {email (unique), password_hash, name, role, firm_name, firm_address, firm_phone, firm_website, firm_license_number, state, seal_data, firm_logo_data, subscription_status, subscription_plan_key, stripe_customer_id, stripe_subscription_id, subscription_current_period_end, subscription_cancel_at_period_end, renewal_checklist_progress[], custom_checklist_items[{id,title,detail,created_at}], invited_by_user_id, created_at}
+- `entries`, `clients`, `document_types`, `signer_intakes`
+- `invites` {token (unique), email, firm_name, state, invited_by_user_id, invited_by_name, message, created_at, expires_at, used_at, email_status, email_error, accepted_user_id}
+- `login_attempts` {identifier (indexed), count, locked_until, updated_at}
+- `certificate_email_log` {user_id, entry_id, recipient, signer_name, subject, email_id, error_msg, status, sent_at, bounce_digest_sent, bounce_digest_sent_at}
+- `cron_runs`, `payment_transactions`
 
 ## 3rd-Party Integrations
 - **Emergent Resend** (email) — commission alerts, entry certificates, invite emails, bounce digests
-- **Stripe** (claimable sandbox, Flow A) — subscriptions, customer portal
-  - Products: `notarium_pro_monthly`, `notarium_pro_yearly`; Trial: 14 days
-  - Onboarding URL for Matthew: `.env` `STRIPE_ONBOARDING_URL`
+- **Stripe** (claimable sandbox, Flow A) — subscriptions, customer portal, `.env` `STRIPE_ONBOARDING_URL`
 
 ## Backlog / Roadmap
 ### P1
-- **Further server.py split**: extract auth, journal, invite, alerts, intake into their own `routes/*.py` following the billing pattern (target <700-line modules each)
-- **Migrate legacy certificate_email_log rows** to unified schema then drop the fallback code paths
-- **Async Stripe SDK** — move blocking Stripe calls to a threadpool to avoid event-loop stalls under provider latency
+- **Server split Phase 3**: extract auth, journal, alerts, intake into their own `routes/*.py` (target every file <700 lines)
+- **Firm Profile on Journal PDF**: extend firm footer rendering into the full multi-entry journal export (not just individual certificates)
 
 ### P2
-- **Custom Checklist Steps** — user-defined renewal checklist items
 - **Multi-State Commissions** — hold CA+NV etc. with separate alerts and separate checklists
-- **Firm profile in intake portal** — show firm branding on the public signer intake page
+- **Async Stripe SDK** — move blocking Stripe calls to a threadpool to avoid event-loop stalls
+- **Signer copy of certificate as text summary** — for those without PDF viewers
 
-### Hardening Notes
+### Hardening
 - Explicit-origin credentialed CORS (currently `allow_origins=['*']`, `allow_credentials=False`)
-- Wrap invite acceptance in a Mongo transaction (partial-state prevention on DB failures)
-- Unique index on `login_attempts.identifier`
+- Wrap invite acceptance in a Mongo transaction (for partial-state prevention on rare DB failures)
+- Migrate legacy certificate_email_log rows to unified schema then drop fallback code paths
 
 ## Test Reports
-`/app/test_reports/iteration_{1..19}.json` — iteration_19 confirms email-history compat (3/3), billing portal origin validation (verified via curl post-restart), all 41 requested regressions pass; 3 tests skipped due to external Resend quota exhaustion (temporary infra issue, not a code defect).
+`/app/test_reports/iteration_{1..20}.json` — iteration_20 flagged one race defect (custom-step 20-cap); post-fix self-test ran 3 concurrent 25-request rounds and confirmed exactly 20 admitted every time. Full regression: billing 15/15, iteration_14 17/17, iteration_15 4/4, iteration_16 non-provider 6/6, iteration_17-19 5/5, iteration_20 targeted 56/57 (all after fix).

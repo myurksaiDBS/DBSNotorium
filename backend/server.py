@@ -1533,9 +1533,6 @@ async def add_custom_checklist_item(payload: CustomChecklistIn, user=Depends(get
         raise HTTPException(status_code=400, detail="Step title cannot be empty.")
     if len(title) > 120:
         raise HTTPException(status_code=400, detail="Step title must be under 120 characters.")
-    existing = user.get("custom_checklist_items") or []
-    if len(existing) >= 20:
-        raise HTTPException(status_code=400, detail="Maximum 20 custom steps.")
     new_id = f"custom:{_secrets.token_urlsafe(6)}"
     new_item = {
         "id": new_id,
@@ -1543,10 +1540,16 @@ async def add_custom_checklist_item(payload: CustomChecklistIn, user=Depends(get
         "detail": (payload.detail or "").strip()[:280],
         "created_at": datetime.now(timezone.utc).isoformat(),
     }
-    await db.users.update_one(
-        {"_id": ObjectId(user["_id"])},
+    # Atomic cap: only push when index 19 doesn't already exist (i.e. the
+    # array currently has 19 or fewer items). Concurrent requests that would
+    # push us over 20 find no matching document and return 400 instead of
+    # overflowing.
+    result = await db.users.update_one(
+        {"_id": ObjectId(user["_id"]), "custom_checklist_items.19": {"$exists": False}},
         {"$push": {"custom_checklist_items": new_item}},
     )
+    if result.modified_count == 0:
+        raise HTTPException(status_code=400, detail="Maximum 20 custom steps.")
     return {"item": {**new_item, "completed": False, "state_specific": False, "custom": True}}
 
 

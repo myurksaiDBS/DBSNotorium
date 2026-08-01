@@ -192,6 +192,33 @@ export default function Settings() {
     }
   };
 
+  const [newStep, setNewStep] = useState({ title: "", detail: "" });
+  const [addingStep, setAddingStep] = useState(false);
+
+  const addCustomStep = async (e) => {
+    e.preventDefault();
+    if (!newStep.title.trim()) { toast.error("Give your step a title"); return; }
+    setAddingStep(true);
+    try {
+      await api.post("/renewal-checklist/custom", newStep);
+      toast.success("Custom step added");
+      setNewStep({ title: "", detail: "" });
+      loadChecklist();
+    } catch (e) {
+      toast.error(formatApiError(e.response?.data?.detail) || "Could not add step");
+    } finally { setAddingStep(false); }
+  };
+
+  const deleteCustomStep = async (id) => {
+    if (!window.confirm("Remove this custom step? Its progress will be cleared.")) return;
+    try {
+      await api.delete(`/renewal-checklist/custom/${encodeURIComponent(id)}`);
+      loadChecklist();
+    } catch (e) {
+      toast.error(formatApiError(e.response?.data?.detail) || "Could not delete step");
+    }
+  };
+
   const save = async (e) => {
     e.preventDefault();
     setSaving(true);
